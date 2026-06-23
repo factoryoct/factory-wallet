@@ -4,12 +4,10 @@ import { defineConfig } from 'wxt'
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   srcDir: '.',
-  // ES-format workers so the pvac decrypt worker can code-split its wasm import.
-  vite: () => ({ worker: { format: 'es' } }),
   manifest: {
     name: 'factory wallet',
     description: 'self custody wallet for octra and factory.',
-    permissions: ['storage', 'alarms'],
+    permissions: ['storage', 'alarms', 'offscreen'],
     icons: { 16: 'icon-16.png', 32: 'icon-32.png', 48: 'icon-48.png', 128: 'icon-128.png' },
     // allow WebAssembly (pvac FHE) in extension pages
     content_security_policy: {

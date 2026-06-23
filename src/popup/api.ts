@@ -25,6 +25,7 @@ export const api = {
   balance: (address: string) => call<{ balance: string; nonce: number }>({ type: 'balance', address }),
   getSeed: (address: string) => call<{ seedHex: string }>({ type: 'getSeed', address }),
   getSecrets: (address: string) => call<{ mnemonic?: string; privateKey: string }>({ type: 'getSecrets', address }),
+  privDecrypt: (address: string, cipher: string) => call<{ value: string }>({ type: 'privDecrypt', address, cipher }),
   tokens: (address: string) => call<{ symbol: string; balance: string; native: boolean; address: string }[]>({ type: 'tokens', address }),
   addToken: (address: string) => call<{ symbol: string; address: string }[]>({ type: 'addToken', address }),
   removeToken: (address: string) => call<{ symbol: string; address: string }[]>({ type: 'removeToken', address }),
