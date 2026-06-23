@@ -34,9 +34,6 @@ export const NETWORKS = [
 // Default token list used to seed the wallet on first run; user-managed after that.
 const KNOWN_TOKENS = [
   { symbol: 'FACT', address: 'octG3mZ3ZwNAe3LYyhg23x3qSoVRewD9V8MGeZbmj7ZKuLP' },
-  { symbol: 'COG',  address: 'octEx46ZnMbYcBRkgnUjMMkpEufJ8chKijJAV5MR1oRoJFd' },
-  { symbol: 'SPRK', address: 'octbRos9ZWLhoGBa7D62fPnJbZLxPketQpUaj3ZuA7UxWiF' },
-  { symbol: 'LUM',  address: 'oct2z7ESqskjKoGddnKxotKKBHn8RTGrHX36tYA2HJG4Q7H' },
 ]
 
 function requireAddress(a: string): string {
