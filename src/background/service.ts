@@ -78,6 +78,7 @@ type Msg =
   | { type: 'exportPrivateKey'; address: string; password: string }
   | { type: 'reset' }
   | { type: 'getSeed'; address: string }
+  | { type: 'getSecrets'; address: string }
   | { type: 'encryptOp'; address: string; amountMicro: string; encryptedData: string; opType: 'encrypt' | 'decrypt'; ou?: string }
   | { type: 'send'; address: string; to: string; oct: number }
   | { type: 'sendToken'; address: string; token: string; to: string; amountMicro: string }
@@ -250,6 +251,9 @@ export class WalletService {
         const kp = this.requireUnlocked().keypair(msg.address)
         return { seedHex: bytesToHex(kp.privateKey) }
       }
+
+      case 'getSecrets':
+        return this.requireUnlocked().secrets(msg.address)
 
       case 'tokens': {
         const list = await this.loadTokens()

@@ -871,6 +871,7 @@ function Onboard({ onDone, setErr, err }: { onDone: (a: AccountView[]) => void; 
   const [mode, setMode] = useState<'create' | 'import'>('create')
   const [impMode, setImpMode] = useState<'mnemonic' | 'private'>('mnemonic')
   const [pw, setPw] = useState(''); const [pw2, setPw2] = useState(''); const [value, setValue] = useState(''); const [busy, setBusy] = useState(false)
+  const [backup, setBackup] = useState<{ accounts: AccountView[]; mnemonic?: string; privateKey: string } | null>(null)
   const submit = async () => {
     setErr('')
     if (pw.length < 12) return setErr('password must be at least 12 characters')
@@ -879,12 +880,20 @@ function Onboard({ onDone, setErr, err }: { onDone: (a: AccountView[]) => void; 
       if (pw !== pw2) return setErr('passwords do not match')
     } else if (!value.trim()) return setErr(impMode === 'mnemonic' ? 'enter your seed phrase' : 'enter your private key')
     setBusy(true)
-    try { onDone(mode === 'create' ? await api.create(pw) : await api.importWallet(pw, impMode, value.trim())) }
-    catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+    try {
+      if (mode === 'create') {
+        const accts = await api.create(pw)
+        const sec = await api.getSecrets(accts[0]!.address).catch(() => ({ privateKey: '', mnemonic: undefined as string | undefined }))
+        setBackup({ accounts: accts, mnemonic: sec.mnemonic, privateKey: sec.privateKey })
+      } else {
+        onDone(await api.importWallet(pw, impMode, value.trim()))
+      }
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
   }
   const subTab = (m: 'mnemonic' | 'private', txt: string) => (
     <button key={m} onClick={() => { setImpMode(m); setValue('') }} style={{ flex: 1, fontFamily: F, fontSize: 12, color: impMode === m ? ink : muted, background: 'none', border: 'none', borderBottom: impMode === m ? `2px solid ${accent}` : '2px solid transparent', padding: '7px 0', cursor: 'pointer' }}>{txt}</button>
   )
+  if (backup) return <BackupView data={backup} onContinue={() => onDone(backup.accounts)} />
   return (
     <div>
       <Brand />
@@ -906,6 +915,40 @@ function Onboard({ onDone, setErr, err }: { onDone: (a: AccountView[]) => void; 
         <input style={input} type="password" value={pw} onChange={e => setPw(e.target.value)} />
         {mode === 'create' && <><div style={label}>{t('confirm_password')}</div><input style={input} type="password" value={pw2} onChange={e => setPw2(e.target.value)} /></>}
         <button style={{ ...btn, opacity: busy ? 0.6 : 1, marginTop: 4 }} disabled={busy} onClick={submit}>{busy ? '…' : mode === 'create' ? t('create_wallet') : t('import_wallet')}</button>
+      </div>
+    </div>
+  )
+}
+
+function BackupView({ data, onContinue }: { data: { mnemonic?: string; privateKey: string }; onContinue: () => void }) {
+  const t = useT()
+  const [ack, setAck] = useState(false)
+  const [copied, setCopied] = useState('')
+  const copy = (s: string, what: string) => { try { navigator.clipboard.writeText(s); setCopied(what); setTimeout(() => setCopied(''), 1200) } catch { /* */ } }
+  const words = (data.mnemonic ?? '').split(' ').filter(Boolean)
+  const copyLink = (what: string, text: string) => <span onClick={() => copy(text, what)} style={{ color: accent, cursor: 'pointer' }}>{copied === what ? t('copied') : t('copy')}</span>
+  return (
+    <div>
+      <Brand />
+      <div style={pad}>
+        <div style={{ fontFamily: F, fontSize: 16, color: ink, fontWeight: 600, marginBottom: 6 }}>{t('backup_title')}</div>
+        <div style={{ fontFamily: F, fontSize: 12, color: '#9a3b3b', lineHeight: 1.5, marginBottom: 14 }}>{t('backup_warn')}</div>
+
+        {words.length > 0 && <>
+          <div style={{ ...label, display: 'flex', justifyContent: 'space-between' }}><span>{t('seed_phrase')}</span>{copyLink('seed', words.join(' '))}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, background: '#fff', border: `1px solid ${border}`, padding: 10, marginBottom: 14 }}>
+            {words.map((w, i) => <div key={i} style={{ fontFamily: M, fontSize: 12, color: ink }}><span style={{ color: muted, marginRight: 4 }}>{i + 1}.</span>{w}</div>)}
+          </div>
+        </>}
+
+        <div style={{ ...label, display: 'flex', justifyContent: 'space-between' }}><span>{t('private_key')}</span>{copyLink('pk', data.privateKey)}</div>
+        <div style={{ fontFamily: M, fontSize: 11, color: ink, background: '#fff', border: `1px solid ${border}`, padding: 10, wordBreak: 'break-all', marginBottom: 14 }}>{data.privateKey}</div>
+
+        <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontFamily: F, fontSize: 12, color: ink, cursor: 'pointer', marginBottom: 14 }}>
+          <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} style={{ marginTop: 2 }} />
+          <span>{t('backup_ack')}</span>
+        </label>
+        <button style={{ ...btn, opacity: ack ? 1 : 0.5, cursor: ack ? 'pointer' : 'not-allowed' }} disabled={!ack} onClick={onContinue}>{t('continue')}</button>
       </div>
     </div>
   )

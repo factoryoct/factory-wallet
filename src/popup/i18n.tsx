@@ -46,6 +46,9 @@ const EN: Dict = {
   // onboard / unlock
   enter_password: 'enter password', unlock: 'unlock', unlocking: 'unlocking…',
   create: 'create', importw: 'import', create_wallet: 'create wallet', import_wallet: 'import wallet',
+  backup_title: 'back up your wallet', backup_warn: 'save these somewhere safe. anyone with them controls your funds, and we cannot recover them for you.',
+  seed_phrase: 'seed phrase', private_key: 'private key', copy: 'copy', copied: 'copied', continue: 'continue',
+  backup_ack: 'I saved my seed phrase and private key somewhere safe.',
   password_min: 'password (min 12)', confirm_password: 'confirm password',
 }
 const RU: Dict = {
@@ -74,6 +77,9 @@ const RU: Dict = {
   account_to_connect: 'какой аккаунт подключить', reject: 'отклонить', connect: 'подключить', approve: 'подтвердить',
   enter_password: 'введите пароль', unlock: 'разблокировать', unlocking: 'разблокировка…',
   create: 'создать', importw: 'импорт', create_wallet: 'создать кошелёк', import_wallet: 'импорт кошелька',
+  backup_title: 'сохраните доступ к кошельку', backup_warn: 'сохраните это в надёжном месте. любой, у кого есть эти данные, управляет вашими средствами, и мы не сможем их восстановить.',
+  seed_phrase: 'сид-фраза', private_key: 'приватный ключ', copy: 'копировать', copied: 'скопировано', continue: 'продолжить',
+  backup_ack: 'я сохранил сид-фразу и приватный ключ в надёжном месте.',
   password_min: 'пароль (мин 12)', confirm_password: 'подтвердите пароль',
 }
 const ZH: Dict = {
@@ -102,6 +108,9 @@ const ZH: Dict = {
   account_to_connect: '要连接的账户', reject: '拒绝', connect: '连接', approve: '批准',
   enter_password: '输入密码', unlock: '解锁', unlocking: '解锁中…',
   create: '创建', importw: '导入', create_wallet: '创建钱包', import_wallet: '导入钱包',
+  backup_title: '备份您的钱包', backup_warn: '请妥善保存。任何掌握这些信息的人都能控制您的资金，我们无法为您恢复。',
+  seed_phrase: '助记词', private_key: '私钥', copy: '复制', copied: '已复制', continue: '继续',
+  backup_ack: '我已将助记词和私钥保存在安全的地方。',
   password_min: '密码（至少12位）', confirm_password: '确认密码',
 }
 const DICTS: Record<Lang, Dict> = { en: EN, ru: RU, zh: ZH }

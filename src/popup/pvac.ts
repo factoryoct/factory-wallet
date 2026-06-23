@@ -16,8 +16,16 @@ const WASM_URL = () => chrome.runtime.getURL('pvac_rs_bg.wasm') + '?v=2540300'
 // Read-decrypt is delegated to a worker so it never blocks the popup. Falls back to the main
 // thread if the worker is unavailable.
 let worker: Worker | null = null
+let workerBroken = false   // disable the worker for the session after a failure; fall back in-thread
 let seq = 0
 const waiting = new Map<number, { resolve: (v: bigint) => void; reject: (e: unknown) => void }>()
+function dropWorker() {
+  workerBroken = true
+  for (const [, w] of waiting) w.reject(new Error('worker unavailable'))
+  waiting.clear()
+  try { worker?.terminate() } catch { /* */ }
+  worker = null
+}
 function getWorker(): Worker {
   if (!worker) {
     worker = new PvacWorker()
@@ -25,18 +33,15 @@ function getWorker(): Worker {
       const { id, ok, value, error } = e.data || {}
       const w = waiting.get(id); if (!w) return
       waiting.delete(id)
-      if (ok) w.resolve(BigInt(value)); else w.reject(new Error(error || 'decrypt failed'))
+      if (ok) w.resolve(BigInt(value))
+      else { w.reject(new Error(error || 'decrypt failed')); dropWorker() }
     }
-    worker.onerror = () => {
-      for (const [, w] of waiting) w.reject(new Error('worker error'))
-      waiting.clear()
-      try { worker?.terminate() } catch { /* */ }
-      worker = null
-    }
+    worker.onerror = () => dropWorker()
   }
   return worker
 }
 function decryptInWorker(seedHex: string, cipher: string): Promise<bigint> {
+  if (workerBroken) return Promise.reject(new Error('worker disabled'))
   return new Promise((resolve, reject) => {
     const id = ++seq
     waiting.set(id, { resolve, reject })
