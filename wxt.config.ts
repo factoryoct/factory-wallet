@@ -4,6 +4,8 @@ import { defineConfig } from 'wxt'
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   srcDir: '.',
+  // ES-format workers so the pvac decrypt worker can code-split its wasm import.
+  vite: () => ({ worker: { format: 'es' } }),
   manifest: {
     name: 'factory wallet',
     description: 'self custody wallet for octra and factory.',

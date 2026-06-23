@@ -2,13 +2,48 @@
 // The public balance is read from `balance_raw`; the encrypted balance is decrypted directly.
 
 import { keypairFromSeed, sign } from '../core/keys'
-import { hexToBytes, bytesToBase64 } from '../core/encoding'
+import { hexToBytes, bytesToBase64, base64ToBytes } from '../core/encoding'
 import { OctraRpc } from '../core/rpc'
 import { api } from './api'
+import PvacWorker from './pvac.worker.ts?worker'
 
 let modP: Promise<any> | null = null
 let wasmP: Promise<any> | null = null
 const cache = new Map<string, { ctx: any; kp: { privateKey: Uint8Array; publicKey: Uint8Array } }>()
+
+const WASM_URL = () => chrome.runtime.getURL('pvac_rs_bg.wasm') + '?v=2540300'
+
+// Read-decrypt is delegated to a worker so it never blocks the popup. Falls back to the main
+// thread if the worker is unavailable.
+let worker: Worker | null = null
+let seq = 0
+const waiting = new Map<number, { resolve: (v: bigint) => void; reject: (e: unknown) => void }>()
+function getWorker(): Worker {
+  if (!worker) {
+    worker = new PvacWorker()
+    worker.onmessage = (e: MessageEvent) => {
+      const { id, ok, value, error } = e.data || {}
+      const w = waiting.get(id); if (!w) return
+      waiting.delete(id)
+      if (ok) w.resolve(BigInt(value)); else w.reject(new Error(error || 'decrypt failed'))
+    }
+    worker.onerror = () => {
+      for (const [, w] of waiting) w.reject(new Error('worker error'))
+      waiting.clear()
+      try { worker?.terminate() } catch { /* */ }
+      worker = null
+    }
+  }
+  return worker
+}
+function decryptInWorker(seedHex: string, cipher: string): Promise<bigint> {
+  return new Promise((resolve, reject) => {
+    const id = ++seq
+    waiting.set(id, { resolve, reject })
+    try { getWorker().postMessage({ id, seedHex, cipher, wasmUrl: WASM_URL() }) }
+    catch (e) { waiting.delete(id); reject(e) }
+  })
+}
 
 async function loadMod() { if (!modP) modP = import('@0xio/pvac'); return modP }
 
@@ -18,7 +53,7 @@ async function loadWasm() {
     wasmP = (async () => {
       const glue: any = await import('@0xio/pvac/wasm/pvac_rs.js')
       // cache-bust: extension resource fetches are cached by URL, so bump this tag when the wasm changes.
-      await glue.default(chrome.runtime.getURL('pvac_rs_bg.wasm') + '?v=2540300')
+      await glue.default(WASM_URL())
       return glue
     })()
   }
@@ -38,21 +73,51 @@ async function getDecryptCtx(address: string, seed: Uint8Array) {
   return entry
 }
 
-// Cache the decrypted value keyed by cipher and network. Backed by chrome.storage.session
-// (memory-backed, never written to disk) so it survives a popup reopen without re-running the
-// decrypt. Cleared on lock. The in-memory Map is an L1 for same-session network switches.
+// Cache the decrypted value keyed by cipher and network. Three layers: an in-memory Map, a
+// memory-backed chrome.storage.session entry (survives a popup reopen, cleared on lock), and an
+// encrypted chrome.storage.local entry (survives a browser restart). The disk layer holds only
+// ciphertext, sealed with an AES key derived from the account seed, so the cleartext balance is
+// never written to disk and is readable only once the wallet is unlocked.
 const valCache = new Map<string, { cipher: string; value: string }>()
 const vkey = (a: string, net: string) => `fw_ppriv_${a}_${net}`
-async function readCache(k: string): Promise<{ cipher: string; value: string } | null> {
+const dkey = (a: string, net: string) => `fw_pdisk_${a}_${net}`
+
+async function aesKeyFromSeed(seed: Uint8Array): Promise<CryptoKey> {
+  const h = await crypto.subtle.digest('SHA-256', seed)
+  return crypto.subtle.importKey('raw', h, 'AES-GCM', false, ['encrypt', 'decrypt'])
+}
+
+async function readCache(k: string, address: string, net: string, key: CryptoKey | null): Promise<{ cipher: string; value: string } | null> {
   const mem = valCache.get(k)
   if (mem) return mem
   try { const r = await chrome.storage.session.get(k); const s = r[k]; if (s) { valCache.set(k, s); return s } } catch { /* */ }
+  if (key) {
+    try {
+      const dk = dkey(address, net)
+      const blob = (await chrome.storage.local.get(dk))[dk] as { cipher: string; iv: string; ct: string } | undefined
+      if (blob) {
+        const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(blob.iv) }, key, base64ToBytes(blob.ct))
+        const v = { cipher: blob.cipher, value: new TextDecoder().decode(pt) }
+        valCache.set(k, v)
+        chrome.storage.session.set({ [k]: v }).catch(() => { /* */ })
+        return v
+      }
+    } catch { /* */ }
+  }
   return null
 }
-async function writeCache(k: string, cipher: string, value: string) {
+
+async function writeCache(k: string, address: string, net: string, cipher: string, value: string, key: CryptoKey | null) {
   const v = { cipher, value }
   valCache.set(k, v)
   try { await chrome.storage.session.set({ [k]: v }) } catch { /* */ }
+  if (key) {
+    try {
+      const iv = crypto.getRandomValues(new Uint8Array(12))
+      const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(value))
+      await chrome.storage.local.set({ [dkey(address, net)]: { cipher, iv: bytesToBase64(iv), ct: bytesToBase64(new Uint8Array(ct)) } })
+    } catch { /* */ }
+  }
 }
 
 export interface PrivSnap { public: bigint; private: bigint | null }
@@ -80,14 +145,20 @@ export async function readPrivateBalance(address: string, rpcUrl: string): Promi
       priv = 0n
     } else {
       const k = vkey(address, rpcUrl)
-      const hit = await readCache(k)
+      const aes = await aesKeyFromSeed(seed).catch(() => null)
+      const hit = await readCache(k, address, rpcUrl, aes)
       if (hit && hit.cipher === cipher) {
         priv = BigInt(hit.value)                     // unchanged -> instant, no wasm
       } else {
-        const m = await loadMod()                    // changed -> decrypt once (heavy)
-        const { ctx } = await getDecryptCtx(address, seed)
-        priv = ctx.decrypt(m.decodeCipher(cipher))
-        await writeCache(k, cipher, priv.toString())
+        // changed -> decrypt once (heavy). Off the UI thread; fall back in-thread on failure.
+        try {
+          priv = await decryptInWorker(seedHex, cipher)
+        } catch {
+          const m = await loadMod()
+          const { ctx } = await getDecryptCtx(address, seed)
+          priv = ctx.decrypt(m.decodeCipher(cipher))
+        }
+        await writeCache(k, address, rpcUrl, cipher, priv.toString(), aes)
       }
     }
   } catch {
@@ -158,7 +229,13 @@ export function clearPvac(address?: string) {
   if (address) { const e = cache.get(address); if (e) wipe(e); cache.delete(address) }
   else { for (const e of cache.values()) wipe(e); cache.clear() }
   valCache.clear()
-  // drop the memory-backed session cache of decrypted balances too
+  // terminate the decrypt worker so its seed-derived context is dropped from memory
+  try { worker?.terminate() } catch { /* */ }
+  worker = null
+  for (const [, w] of waiting) w.reject(new Error('locked'))
+  waiting.clear()
+  // drop the memory-backed session cache of decrypted balances (the encrypted disk cache
+  // survives lock: it is ciphertext, readable only after the next unlock)
   chrome.storage.session.get(null)
     .then(all => { const keys = Object.keys(all).filter(x => x.startsWith('fw_ppriv_')); if (keys.length) return chrome.storage.session.remove(keys) })
     .catch(() => { /* */ })
