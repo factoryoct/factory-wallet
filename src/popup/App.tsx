@@ -147,7 +147,7 @@ export function App() {
   if (view === 'loading') content = <div style={{ ...pad, color: muted, fontFamily: F }}>loading…</div>
   else if (view === 'onboard') content = <Onboard onDone={a => { applyAccounts(a); go('dash') }} setErr={setErr} err={err} />
   else if (view === 'locked') content = <Unlock onDone={async a => { await applyAccounts(a); if (!(await checkApproval())) go('dash') }} setErr={setErr} err={err} />
-  else if (view === 'approval' && approval) content = <ApprovalView req={approval} accounts={accounts} selDefault={sel} onDone={async () => { setApproval(null); if (!(await checkApproval())) go('dash') }} />
+  else if (view === 'approval' && approval) content = <ApprovalView req={approval} accounts={accounts} selDefault={sel} onDone={async () => { setApproval(null); if (!(await checkApproval())) { try { window.close() } catch { /* */ } go('dash') } }} />
   else if (!acct) content = <div style={{ ...pad, color: muted, fontFamily: F }}>no account</div>
   else if (view === 'dash') content = <Dashboard acct={acct} accounts={accounts} sel={sel} setSel={setSel} setAccounts={setAccounts} go={go} open={open} openConnected={openConnected} openAddAccount={openAddAccount} setErr={setErr} />
   else if (view === 'send') content = <SendView acct={acct} back={() => go('dash')} setErr={setErr} />

@@ -4,6 +4,13 @@ export default defineContentScript({
   matches: ['http://*/*', 'https://*/*'],
   runAt: 'document_start',
   async main() {
+    // Swallow the benign "Extension context invalidated" that the framework's content-script
+    // machinery throws after the extension is reloaded or updated while this page is still open.
+    // It is harmless and goes away once the page is refreshed; keep it out of the console.
+    const invalidated = (m: unknown) => typeof m === 'string' && /extension context invalidated/i.test(m)
+    window.addEventListener('error', e => { if (invalidated(e.message) || invalidated((e.error as Error)?.message)) { e.preventDefault(); e.stopImmediatePropagation() } }, true)
+    window.addEventListener('unhandledrejection', e => { if (invalidated((e.reason as Error)?.message) || invalidated(String(e.reason))) e.preventDefault() })
+
     await injectScript('/inpage.js', { keepInDom: true })
 
     window.addEventListener('message', (e) => {
