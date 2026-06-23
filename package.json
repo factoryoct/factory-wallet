@@ -1,0 +1,34 @@
+{
+  "name": "factory-wallet",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "self custody wallet for octra and factory.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "wxt",
+    "build": "wxt build"
+  },
+  "dependencies": {
+    "@0xio/pvac": "^1.0.1",
+    "@noble/ciphers": "^1.3.0",
+    "@noble/curves": "^1.6.0",
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.5.0",
+    "@scure/bip39": "^2.2.0",
+    "bs58": "^6.0.0",
+    "lucide-react": "^1.21.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@wxt-dev/module-react": "^1.1.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "wxt": "^0.19.13"
+  }
+}
