@@ -2,7 +2,7 @@
 
 A self custody browser extension wallet for the [octra](https://x.com/octra) blockchain.
 
-Send OCT and OCS-01 tokens, swap and add liquidity on Factory, keep a private (encrypted) balance, and connect to Octra dapps through a `window.octra` provider. Private keys are generated and stored on your device, encrypted with your password. They never leave the background service worker and are never sent to a node.
+Send OCT and OCS-01 tokens, swap and add liquidity on factory, keep a private (encrypted) balance, and connect to octra dapps through a `window.octra` provider. Private keys are generated and stored on your device, encrypted with your password. They never leave the background service worker and are never sent to a node.
 
 Full documentation: https://factory-amm.xyz/docs#wallet-intro
 
@@ -10,7 +10,9 @@ Full documentation: https://factory-amm.xyz/docs#wallet-intro
 
 - Self custody: keys are derived locally and encrypted at rest (scrypt + AES-GCM-256).
 - Send OCT and OCS-01 tokens, with on-chain activity history.
-- Private balance: encrypt and decrypt funds via the Octra FHE layer.
+- Track your open liquidity positions on factory.
+- Batched transactions: combine several calls into one atomic transaction (multiExec).
+- Private balance: encrypt and decrypt funds via the octra FHE layer.
 - Dapp provider (`window.octra`): connect, sign, and call contracts, with in-popup approval.
 - Multiple accounts, import via seed phrase or private key.
 - Interface available in English, Russian, and Chinese.
