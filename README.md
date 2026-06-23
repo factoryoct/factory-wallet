@@ -10,7 +10,6 @@ Full documentation: https://factory-amm.xyz/docs#wallet-intro
 
 - Self custody: keys are derived locally and encrypted at rest (scrypt + AES-GCM-256).
 - Send OCT and OCS-01 tokens, with on-chain activity history.
-- Swap and add liquidity on Factory directly from the wallet.
 - Private balance: encrypt and decrypt funds via the Octra FHE layer.
 - Dapp provider (`window.octra`): connect, sign, and call contracts, with in-popup approval.
 - Multiple accounts, import via seed phrase or private key.
