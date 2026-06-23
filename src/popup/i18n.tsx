@@ -40,7 +40,7 @@ const EN: Dict = {
   change_password: 'change password', export_private_key: 'export private key', connected_sites: 'connected sites',
   lock_wallet: 'lock wallet', danger_zone: 'danger zone', reset_wallet: 'reset wallet',
   // approval
-  connection_request: 'connection request', signature_request: 'signature request',
+  connection_request: 'connection request', signature_request: 'review transaction',
   connect_hint: 'this site wants to connect to your wallet and see your account address. it cannot move funds without a separate approval.',
   account_to_connect: 'account to connect', reject: 'reject', connect: 'connect', approve: 'approve',
   // onboard / unlock
@@ -69,7 +69,7 @@ const RU: Dict = {
   auto_lock: 'автоблокировка', minutes: 'минут', never: 'никогда', language: 'язык', security: 'безопасность',
   change_password: 'сменить пароль', export_private_key: 'экспорт приватного ключа', connected_sites: 'подключённые сайты',
   lock_wallet: 'заблокировать', danger_zone: 'опасная зона', reset_wallet: 'сбросить кошелёк',
-  connection_request: 'запрос подключения', signature_request: 'запрос подписи',
+  connection_request: 'запрос подключения', signature_request: 'проверка транзакции',
   connect_hint: 'этот сайт хочет подключиться к кошельку и видеть адрес вашего аккаунта. без отдельного подтверждения он не может двигать средства.',
   account_to_connect: 'какой аккаунт подключить', reject: 'отклонить', connect: 'подключить', approve: 'подтвердить',
   enter_password: 'введите пароль', unlock: 'разблокировать', unlocking: 'разблокировка…',
@@ -97,7 +97,7 @@ const ZH: Dict = {
   auto_lock: '自动锁定', minutes: '分钟', never: '从不', language: '语言', security: '安全',
   change_password: '修改密码', export_private_key: '导出私钥', connected_sites: '已连接站点',
   lock_wallet: '锁定钱包', danger_zone: '危险区', reset_wallet: '重置钱包',
-  connection_request: '连接请求', signature_request: '签名请求',
+  connection_request: '连接请求', signature_request: '确认交易',
   connect_hint: '此站点希望连接您的钱包并查看您的账户地址。未经单独批准，它无法转移资金。',
   account_to_connect: '要连接的账户', reject: '拒绝', connect: '连接', approve: '批准',
   enter_password: '输入密码', unlock: '解锁', unlocking: '解锁中…',

@@ -89,35 +89,84 @@ function SafeOrigin({ origin }: { origin: string }) {
   )
 }
 
+const prettyMethod = (m: unknown) => String(m ?? '').replace(/_/g, ' ')
+const valueOf = (v: unknown): bigint => { try { return BigInt(String(v ?? '0')) } catch { return 0n } }
+
+function Disclosure({ open, toggle }: { open: boolean; toggle: () => void }) {
+  return (
+    <button onClick={toggle} style={{ marginTop: 10, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', fontFamily: F, fontSize: 12, color: accent }}>
+      {open ? 'hide details' : 'show details'}
+    </button>
+  )
+}
+
 function TxSummary({ d }: { d: any }) {
-  const fee = `${microToOct(feeMicro(d))} OCT`
+  const [open, setOpen] = useState(false)
+  const fee = `~${microToOct(feeMicro(d))} OCT`
+
   if (d.kind === 'multiExec') {
     const calls: any[] = d.calls ?? []
     let total = 0n
-    for (const c of calls) { try { total += BigInt(String(c.value ?? '0')) } catch { /* ignore */ } }
+    for (const c of calls) total += valueOf(c.value)
     return (
       <Block>
-        <Row label="atomic batch" value={`${calls.length} calls`} />
-        <Row label="total OCT moved" value={`${microToOct(total)} OCT`} />
-        <Row label="network fee" value={`~${fee}`} />
-        {calls.map((c, i) => (
-          <div key={i} style={{ borderTop: `1px solid ${border}`, marginTop: 8, paddingTop: 6 }}>
-            <Row label={`#${i + 1} method`} value={String(c.method)} />
-            <Row label="to" value={String(c.to)} mono />
-            <Row label="value" value={`${microToOct(c.value)} OCT`} />
-            <Row label="args" value={JSON.stringify(c.params ?? [])} mono />
+        <Row label="total" value={`${microToOct(total)} OCT`} />
+        <Row label="network fee" value={fee} />
+        <div style={{ marginTop: 8 }}>
+          {calls.map((c, i) => {
+            const v = valueOf(c.value)
+            return (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '5px 0' }}>
+                <span style={{ fontFamily: F, fontSize: 13, color: ink }}>{i + 1}. {prettyMethod(c.method)}</span>
+                {v > 0n && <span style={{ fontFamily: F, fontSize: 13, color: muted }}>{microToOct(v)} OCT</span>}
+              </div>
+            )
+          })}
+        </div>
+        <Disclosure open={open} toggle={() => setOpen(o => !o)} />
+        {open && (
+          <div style={{ marginTop: 4 }}>
+            {calls.map((c, i) => (
+              <div key={i} style={{ borderTop: `1px solid ${border}`, marginTop: 8, paddingTop: 6 }}>
+                <Row label={`#${i + 1} method`} value={String(c.method)} />
+                <Row label="to" value={String(c.to)} mono />
+                <Row label="value" value={`${microToOct(c.value)} OCT`} />
+                <Row label="args" value={JSON.stringify(c.params ?? [])} mono />
+              </div>
+            ))}
+            <Row label="from" value={d.address} mono />
           </div>
-        ))}
-        <Row label="from" value={d.address} mono />
+        )}
       </Block>
     )
   }
+
+  if (d.kind === 'transfer') {
+    return (
+      <Block>
+        <Row label="send" value={`${microToOct(octInputToMicro(d.oct))} OCT`} />
+        <Row label="to" value={short(d.to)} mono />
+        <Row label="network fee" value={fee} />
+      </Block>
+    )
+  }
+
+  // single contract call
+  const val = octInputToMicro(d.valueOct || 0)
   return (
     <Block>
-      {d.kind === 'transfer' && <><Row label="send" value={`${microToOct(octInputToMicro(d.oct))} OCT`} /><Row label="to" value={d.to} mono /></>}
-      {d.kind === 'call' && <><Row label="call" value={d.method} /><Row label="contract" value={d.contract} mono /><Row label="value" value={`${microToOct(octInputToMicro(d.valueOct || 0))} OCT`} /><Row label="args" value={JSON.stringify(d.params)} mono /></>}
-      <Row label="network fee" value={`~${fee}`} />
-      <Row label="from" value={d.address} mono />
+      <Row label="action" value={prettyMethod(d.method)} />
+      <Row label="contract" value={short(d.contract)} mono />
+      {val > 0n && <Row label="value" value={`${microToOct(val)} OCT`} />}
+      <Row label="network fee" value={fee} />
+      <Disclosure open={open} toggle={() => setOpen(o => !o)} />
+      {open && (
+        <div style={{ marginTop: 4 }}>
+          <Row label="contract" value={String(d.contract)} mono />
+          <Row label="args" value={JSON.stringify(d.params ?? [])} mono />
+          <Row label="from" value={d.address} mono />
+        </div>
+      )}
     </Block>
   )
 }
