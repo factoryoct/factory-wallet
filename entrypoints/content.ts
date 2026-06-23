@@ -9,15 +9,25 @@ export default defineContentScript({
     window.addEventListener('message', (e) => {
       const d = e.data
       if (e.source !== window || !d || d.target !== 'octra-cs' || typeof d.id !== 'number') return
-      chrome.runtime.sendMessage({ __provider: true, method: d.method, params: d.params }, (r) => {
-        const err = chrome.runtime.lastError
-        window.postMessage({
-          target: 'octra-inpage',
-          id: d.id,
-          result: !err && r?.ok ? r.res : undefined,
-          error: err ? err.message : (r?.ok ? undefined : (r?.error ?? 'error')),
-        }, location.origin)
-      })
+      // If the extension was reloaded or updated, this page's context is stale until it reloads.
+      // Reply with an error instead of throwing an uncaught "Extension context invalidated".
+      if (!chrome.runtime?.id) {
+        window.postMessage({ target: 'octra-inpage', id: d.id, result: undefined, error: 'wallet was reloaded, refresh the page' }, location.origin)
+        return
+      }
+      try {
+        chrome.runtime.sendMessage({ __provider: true, method: d.method, params: d.params }, (r) => {
+          const err = chrome.runtime.lastError
+          window.postMessage({
+            target: 'octra-inpage',
+            id: d.id,
+            result: !err && r?.ok ? r.res : undefined,
+            error: err ? err.message : (r?.ok ? undefined : (r?.error ?? 'error')),
+          }, location.origin)
+        })
+      } catch {
+        window.postMessage({ target: 'octra-inpage', id: d.id, result: undefined, error: 'wallet was reloaded, refresh the page' }, location.origin)
+      }
     })
   },
 })

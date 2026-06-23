@@ -49,6 +49,8 @@ export default defineBackground(() => {
       provider.resolveApproval(msg.id, msg.approved, msg.address).then(() => sendResponse({ ok: true }))
       return true
     }
+    // popup heartbeat: lets the provider know a popup is alive (so it need not open a window)
+    if (msg && msg.__popupOpen) { provider.ping(); sendResponse({ ok: true }); return false }
     armAutoLock()   // only extension-page activity re-arms the idle lock
     // connected-sites management lives on the provider, not the wallet service
     if (msg.type === 'sites') { provider.getSites().then(res => sendResponse({ ok: true, res })); return true }

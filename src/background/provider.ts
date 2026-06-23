@@ -44,12 +44,18 @@ export class ProviderController {
   private perms: Record<string, string> = {}   // origin -> granted address
   private pending = new Map<string, Pending>()
   private ready: Promise<void>
+  private approvalWindowId: number | null = null
+  private lastPing = 0
 
   constructor(private wallet: WalletService) {
     // Gate handling on the permission store being loaded (a request before load would
     // otherwise see empty perms).
     this.ready = chrome.storage.local.get(PERM_KEY).then(r => { this.perms = (r[PERM_KEY] as Record<string, string>) ?? {} })
+    try { chrome.windows?.onRemoved?.addListener(id => { if (id === this.approvalWindowId) this.approvalWindowId = null }) } catch { /* */ }
   }
+
+  /** The popup pings while open; this lets us tell whether one is alive to render a request. */
+  ping() { this.lastPing = Date.now() }
   private persist() { return chrome.storage.local.set({ [PERM_KEY]: this.perms }) }
 
   async handle(origin: string, msg: { method: string; params: any[] }, sendResponse: Pending['sendResponse']) {
@@ -105,10 +111,32 @@ export class ProviderController {
     // crypto.randomUUID so approval IDs are never reused across service-worker lifecycles.
     const id = 'apr_' + crypto.randomUUID()
     this.pending.set(id, { sendResponse, kind, origin, data })
-    // Show the request INSIDE the main popup (no separate window). Badge the toolbar icon so
-    // the user knows to open it; best-effort openPopup surfaces it immediately when allowed.
+    this.surface()
+  }
+
+  // Surface a pending request. Try the toolbar popup first (it opens on the first tx of a
+  // sequence, which rides a user gesture). If no popup heartbeat lands shortly after, a follow-up
+  // request (e.g. the second hop of a multi-hop swap) would otherwise sit behind only a badge, so
+  // open a dedicated window instead.
+  private surface() {
     this.updateBadge()
-    try { (chrome.action as any)?.openPopup?.() } catch { /* needs a user gesture in some browsers */ }
+    try { (chrome.action as any)?.openPopup?.()?.catch?.(() => { /* */ }) } catch { /* */ }
+    const t0 = Date.now()
+    setTimeout(() => {
+      if (this.pending.size === 0) return
+      if (this.lastPing > t0) return   // a live popup heartbeat landed; it will render the request
+      this.openApprovalWindow()
+    }, 1000)
+  }
+
+  private async openApprovalWindow() {
+    if (this.approvalWindowId != null) {
+      try { await chrome.windows.update(this.approvalWindowId, { focused: true, drawAttention: true }); return } catch { this.approvalWindowId = null }
+    }
+    try {
+      const w = await chrome.windows.create({ url: chrome.runtime.getURL('popup.html'), type: 'popup', width: 400, height: 600, focused: true })
+      this.approvalWindowId = w?.id ?? null
+    } catch { /* badge remains as the last resort */ }
   }
 
   private updateBadge() {
@@ -148,6 +176,10 @@ export class ProviderController {
     if (!p) return
     this.pending.delete(id)
     this.updateBadge()
+    if (this.pending.size === 0 && this.approvalWindowId != null) {
+      const wid = this.approvalWindowId; this.approvalWindowId = null
+      chrome.windows.remove(wid).catch(() => { /* */ })
+    }
     if (!approved) return p.sendResponse({ ok: false, error: 'user rejected request' })
     try {
       if (p.kind === 'connect') {

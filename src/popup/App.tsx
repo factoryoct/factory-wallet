@@ -120,6 +120,13 @@ export function App() {
       if (!(await checkApproval())) setView('dash')
     })()
   }, [])
+  // Heartbeat so the background knows a popup is alive and need not open a separate window.
+  useEffect(() => {
+    const ping = () => { try { chrome.runtime.sendMessage({ __popupOpen: true }).catch(() => {}) } catch { /* */ } }
+    ping()
+    const t = setInterval(ping, 700)
+    return () => clearInterval(t)
+  }, [])
   // Surface a request that arrives while the dashboard is open.
   useEffect(() => {
     if (view !== 'dash') return
