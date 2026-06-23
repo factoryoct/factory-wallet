@@ -18,7 +18,7 @@ async function loadWasm(url: string) {
   if (!wasmP) {
     wasmP = (async () => {
       const glue: any = await import('@0xio/pvac/wasm/pvac_rs.js')
-      await glue.default(url)
+      await glue.default({ module_or_path: url })
       return glue
     })()
   }

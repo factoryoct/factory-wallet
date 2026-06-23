@@ -58,7 +58,7 @@ async function loadWasm() {
     wasmP = (async () => {
       const glue: any = await import('@0xio/pvac/wasm/pvac_rs.js')
       // cache-bust: extension resource fetches are cached by URL, so bump this tag when the wasm changes.
-      await glue.default(WASM_URL())
+      await glue.default({ module_or_path: WASM_URL() })
       return glue
     })()
   }
