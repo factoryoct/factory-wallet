@@ -79,6 +79,7 @@ type Msg =
   | { type: 'reset' }
   | { type: 'getSeed'; address: string }
   | { type: 'getSecrets'; address: string }
+  | { type: 'privateBalanceCached'; address: string }
   | { type: 'encryptOp'; address: string; amountMicro: string; encryptedData: string; opType: 'encrypt' | 'decrypt'; ou?: string }
   | { type: 'send'; address: string; to: string; oct: number }
   | { type: 'sendToken'; address: string; token: string; to: string; amountMicro: string }
@@ -254,6 +255,22 @@ export class WalletService {
 
       case 'getSecrets':
         return this.requireUnlocked().secrets(msg.address)
+
+      // Decrypted private balance from the popup's encrypted on-disk cache (no fresh FHE work).
+      // The cache is sealed with a key derived from the seed; the background holds the seed, so it
+      // can read the value the popup last computed. Returns null until the popup has decrypted once.
+      case 'privateBalanceCached': {
+        const seed = this.requireUnlocked().keypair(msg.address).privateKey
+        const dk = `fw_pdisk_${msg.address}_${this.rpc.url}`
+        const blob = (await chrome.storage.local.get(dk))[dk] as { cipher: string; iv: string; ct: string } | undefined
+        if (!blob) return { value: null }
+        try {
+          const keyRaw = await crypto.subtle.digest('SHA-256', seed)
+          const key = await crypto.subtle.importKey('raw', keyRaw, 'AES-GCM', false, ['decrypt'])
+          const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(blob.iv) }, key, base64ToBytes(blob.ct))
+          return { value: new TextDecoder().decode(pt) }
+        } catch { return { value: null } }
+      }
 
       case 'tokens': {
         const list = await this.loadTokens()

@@ -38,6 +38,8 @@ export default defineUnlistedScript(() => {
     // revoke this site's connection so the next requestAccounts shows the approval popup again
     disconnect: () => request({ method: 'octra_disconnect' }),
     getBalance: (address: string) => request({ method: 'octra_getBalance', params: [address] }),
+    // decrypted private (encrypted) balance for the connected account, from the wallet's cache
+    privateBalance: () => request({ method: 'octra_privateBalance' }),
     sendTransfer: (to: string, oct: number) => request({ method: 'octra_signAndSend', params: [{ kind: 'transfer', to, oct }] }),
     call: (contract: string, method: string, params: (string | number)[], valueOct?: number) =>
       request({ method: 'octra_signAndSend', params: [{ kind: 'call', contract, method, params, valueOct }] }),

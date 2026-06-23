@@ -81,6 +81,11 @@ export class ProviderController {
         case 'octra_getBalance':
           if (!isValidAddress(msg.params?.[0])) return sendResponse({ ok: false, error: 'invalid address' })
           return sendResponse({ ok: true, res: await w({ type: 'balance', address: msg.params[0] }) })
+        case 'octra_privateBalance': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          return sendResponse({ ok: true, res: await w({ type: 'privateBalanceCached', address: addr }) })
+        }
         case 'octra_requestAccounts': {
           if (this.perms[origin]) return sendResponse({ ok: true, res: [this.perms[origin]] })
           const status = await w({ type: 'status' }) as { hasVault: boolean; unlocked: boolean }
