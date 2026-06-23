@@ -13,44 +13,6 @@ import { base64ToBytes, bytesToBase64, bytesToHex } from '../core/encoding'
 
 const SESSION_KEY = 'fw_session'
 
-// Offscreen document that runs the FHE wasm (decrypt) off the popup thread. Created on demand,
-// closed on lock so the seed-derived context never lingers in memory while locked.
-const OFFSCREEN_URL = 'pvac-offscreen.html'
-let offscreenP: Promise<void> | null = null
-async function ensureOffscreen(): Promise<void> {
-  if (!offscreenP) offscreenP = (async () => {
-    try { if (await (chrome.offscreen as any).hasDocument?.()) return } catch { /* */ }
-    try {
-      await chrome.offscreen.createDocument({
-        url: chrome.runtime.getURL(OFFSCREEN_URL),
-        reasons: ['WORKERS' as chrome.offscreen.Reason],
-        justification: 'decrypt the private balance with FHE wasm off the popup thread',
-      })
-    } catch { /* already created (race) */ }
-  })()
-  return offscreenP
-}
-async function closeOffscreen(): Promise<void> {
-  offscreenP = null
-  try { await chrome.offscreen.closeDocument() } catch { /* none open */ }
-}
-async function offscreenDecrypt(seedHex: string, cipher: string): Promise<string> {
-  await ensureOffscreen()
-  for (let i = 0; i < 30; i++) {
-    try {
-      const res: any = await chrome.runtime.sendMessage({ __pvac: true, seedHex, cipher })
-      if (res && res.ok) return res.value as string
-      if (res && res.error) throw new Error(res.error)
-    } catch (e) {
-      if (e instanceof Error && /Receiving end|establish connection/i.test(e.message)) { await wait(150); continue }
-      throw e
-    }
-    await wait(150)
-  }
-  throw new Error('offscreen decrypt timed out')
-}
-const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
-
 const VAULT_KEY = 'factory_vault'
 const RPC_KEY = 'fw_rpc'
 const TOKENS_KEY = 'fw_tokens'
@@ -117,7 +79,6 @@ type Msg =
   | { type: 'reset' }
   | { type: 'getSeed'; address: string }
   | { type: 'getSecrets'; address: string }
-  | { type: 'privDecrypt'; address: string; cipher: string }
   | { type: 'encryptOp'; address: string; amountMicro: string; encryptedData: string; opType: 'encrypt' | 'decrypt'; ou?: string }
   | { type: 'send'; address: string; to: string; oct: number }
   | { type: 'sendToken'; address: string; token: string; to: string; amountMicro: string }
@@ -255,7 +216,6 @@ export class WalletService {
       case 'lock':
         this.keyring = null; this.vkey = null; this.vsalt = null
         await this.clearSession()
-        await closeOffscreen()   // drop the FHE context (seed-derived) held in the offscreen doc
         // Scrub cached private-balance values so locking leaves nothing behind.
         try { const all = await chrome.storage.session.get(null); const k = Object.keys(all).filter(x => x.startsWith('fw_ppriv_')); if (k.length) await chrome.storage.session.remove(k) } catch { /* */ }
         try { const all = await chrome.storage.local.get(null); const k = Object.keys(all).filter(x => x.startsWith('fw_ppriv_')); if (k.length) await chrome.storage.local.remove(k) } catch { /* */ }
@@ -294,11 +254,6 @@ export class WalletService {
 
       case 'getSecrets':
         return this.requireUnlocked().secrets(msg.address)
-
-      case 'privDecrypt': {
-        const seedHex = bytesToHex(this.requireUnlocked().keypair(msg.address).privateKey)
-        return { value: await offscreenDecrypt(seedHex, msg.cipher) }
-      }
 
       case 'tokens': {
         const list = await this.loadTokens()

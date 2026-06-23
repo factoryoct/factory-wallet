@@ -5,12 +5,50 @@ import { keypairFromSeed, sign } from '../core/keys'
 import { hexToBytes, bytesToBase64, base64ToBytes } from '../core/encoding'
 import { OctraRpc } from '../core/rpc'
 import { api } from './api'
+import PvacWorker from './pvac.worker.ts?worker'
 
 let modP: Promise<any> | null = null
 let wasmP: Promise<any> | null = null
 const cache = new Map<string, { ctx: any; kp: { privateKey: Uint8Array; publicKey: Uint8Array } }>()
 
 const WASM_URL = () => chrome.runtime.getURL('pvac_rs_bg.wasm') + '?v=2540300'
+
+// Read-decrypt is delegated to a worker so it never blocks the popup. Falls back to the main
+// thread if the worker is unavailable.
+let worker: Worker | null = null
+let workerBroken = false   // disable the worker for the session after a failure; fall back in-thread
+let seq = 0
+const waiting = new Map<number, { resolve: (v: bigint) => void; reject: (e: unknown) => void }>()
+function dropWorker() {
+  workerBroken = true
+  for (const [, w] of waiting) w.reject(new Error('worker unavailable'))
+  waiting.clear()
+  try { worker?.terminate() } catch { /* */ }
+  worker = null
+}
+function getWorker(): Worker {
+  if (!worker) {
+    worker = new PvacWorker()
+    worker.onmessage = (e: MessageEvent) => {
+      const { id, ok, value, error } = e.data || {}
+      const w = waiting.get(id); if (!w) return
+      waiting.delete(id)
+      if (ok) w.resolve(BigInt(value))
+      else { w.reject(new Error(error || 'decrypt failed')); dropWorker() }
+    }
+    worker.onerror = () => dropWorker()
+  }
+  return worker
+}
+function decryptInWorker(seedHex: string, cipher: string): Promise<bigint> {
+  if (workerBroken) return Promise.reject(new Error('worker disabled'))
+  return new Promise((resolve, reject) => {
+    const id = ++seq
+    waiting.set(id, { resolve, reject })
+    try { getWorker().postMessage({ id, seedHex, cipher, wasmUrl: WASM_URL() }) }
+    catch (e) { waiting.delete(id); reject(e) }
+  })
+}
 
 async function loadMod() { if (!modP) modP = import('@0xio/pvac'); return modP }
 
@@ -117,11 +155,9 @@ export async function readPrivateBalance(address: string, rpcUrl: string): Promi
       if (hit && hit.cipher === cipher) {
         priv = BigInt(hit.value)                     // unchanged -> instant, no wasm
       } else {
-        // changed -> decrypt once (heavy). Runs in the offscreen document, off the popup thread;
-        // fall back to the popup thread only if that path is unavailable.
+        // changed -> decrypt once (heavy). Off the UI thread; fall back in-thread on failure.
         try {
-          const r = await api.privDecrypt(address, cipher)
-          priv = BigInt(r.value)
+          priv = await decryptInWorker(seedHex, cipher)
         } catch {
           const m = await loadMod()
           const { ctx } = await getDecryptCtx(address, seed)
@@ -198,6 +234,11 @@ export function clearPvac(address?: string) {
   if (address) { const e = cache.get(address); if (e) wipe(e); cache.delete(address) }
   else { for (const e of cache.values()) wipe(e); cache.clear() }
   valCache.clear()
+  // terminate the decrypt worker so its seed-derived context is dropped from memory
+  try { worker?.terminate() } catch { /* */ }
+  worker = null
+  for (const [, w] of waiting) w.reject(new Error('locked'))
+  waiting.clear()
   // drop the memory-backed session cache of decrypted balances (the encrypted disk cache
   // survives lock: it is ciphertext, readable only after the next unlock)
   chrome.storage.session.get(null)
