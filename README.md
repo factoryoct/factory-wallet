@@ -12,8 +12,8 @@ Full documentation: https://factory-amm.xyz/docs#wallet-intro
 - Send OCT and OCS-01 tokens, with on-chain activity history.
 - Track your open liquidity positions on factory.
 - Batched transactions: combine several calls into one atomic transaction (multiExec).
-- Private balance: encrypt and decrypt funds via the octra FHE layer.
-- Dapp provider (`window.octra`): connect, sign, and call contracts, with in-popup approval.
+- Private balance: encrypt and decrypt funds via the octra FHE layer; decryption runs off the UI thread and is cached, so it loads fast and never freezes the popup.
+- Dapp provider (`window.octra`): connect, sign, and call contracts, with in-popup approval. Connecting while locked opens the popup to unlock, then continues automatically.
 - Multiple accounts, import via seed phrase or private key.
 - Interface available in English, Russian, and Chinese.
 
@@ -51,4 +51,4 @@ npm run typecheck   # TypeScript check, no emit
 
 ## Security
 
-Your password is the only secret protecting the vault at rest, so choose a strong one. The wallet enforces a password policy on creation and import. The decrypted keyring lives only in memory while unlocked and is wiped on lock or auto-lock.
+Your password is the only secret protecting the vault at rest, so choose a strong one. The wallet enforces a password policy on creation and import. The decrypted keyring lives only in memory while unlocked and is wiped on lock or auto-lock. The private balance cache is sealed with a key derived from your seed, so it is readable only while unlocked and is never written to disk in cleartext.

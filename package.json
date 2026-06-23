@@ -1,6 +1,6 @@
 {
   "name": "factory-wallet",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "self custody wallet for octra and factory.",
