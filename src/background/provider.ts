@@ -79,7 +79,8 @@ export class ProviderController {
           if (this.perms[origin]) return sendResponse({ ok: true, res: [this.perms[origin]] })
           const status = await w({ type: 'status' }) as { hasVault: boolean; unlocked: boolean }
           if (!status.hasVault) return sendResponse({ ok: false, error: 'no wallet set up in factory wallet' })
-          if (!status.unlocked) return sendResponse({ ok: false, error: 'unlock factory wallet first' })
+          // if locked, still queue the connect and open the popup: the user unlocks there and the
+          // pending request is shown right after, so connecting is one flow with no error.
           return this.open(origin, 'connect', {}, sendResponse)
         }
         case 'octra_signAndSend': {
