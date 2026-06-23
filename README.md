@@ -1,6 +1,6 @@
 # factory wallet
 
-A self custody browser extension wallet for the [Octra](https://octra.network) blockchain.
+A self custody browser extension wallet for the [Octra](https://x.com/octra) blockchain.
 
 Send OCT and OCS-01 tokens, swap and add liquidity on Factory, keep a private (encrypted) balance, and connect to Octra dapps through a `window.octra` provider. Private keys are generated and stored on your device, encrypted with your password. They never leave the background service worker and are never sent to a node.
 
