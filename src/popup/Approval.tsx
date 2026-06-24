@@ -73,6 +73,7 @@ function feeMicro(d: any): bigint {
   if (d.kind === 'transfer') return Number(d.oct) < 1000 ? 1n : 3n
   if (d.kind === 'call') return 10_000n
   if (d.kind === 'multiExec') return 5_000n
+  if (d.kind === 'deploy') return 200_000n
   return 0n
 }
 
@@ -146,6 +147,17 @@ function TxSummary({ d }: { d: any }) {
       <Block>
         <Row label="send" value={`${microToOct(octInputToMicro(d.oct))} OCT`} />
         <Row label="to" value={short(d.to)} mono />
+        <Row label="network fee" value={fee} />
+      </Block>
+    )
+  }
+
+  if (d.kind === 'deploy') {
+    return (
+      <Block>
+        <Row label="deploy" value="new contract" />
+        <Row label="bytecode" value={`${Math.ceil((d.bytecode?.length || 0) * 3 / 4 / 1024)} KB`} />
+        <Row label="constructor args" value={JSON.stringify(d.params ?? [])} mono />
         <Row label="network fee" value={fee} />
       </Block>
     )

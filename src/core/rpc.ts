@@ -30,6 +30,16 @@ export class OctraRpc {
     return this.call<AccountInfo>('octra_account', [address])
   }
 
+  /** Deterministic deployment address for (bytecode, deployer, nonce). The deploy tx's
+   * to_ MUST equal this (it is signed), so the node accepts the bytecode that derives it.
+   * nonce MUST be a number (a string yields nonce=0). Confirmed against a live deploy. */
+  async computeContractAddress(bytecodeB64: string, deployer: string, nonce: number): Promise<string> {
+    const r = await this.call<{ address?: string } | string>('octra_computeContractAddress', [bytecodeB64, deployer, nonce])
+    const addr = typeof r === 'string' ? r : r?.address
+    if (!addr) throw new Error('computeContractAddress: no address')
+    return addr
+  }
+
   /** Read-only contract view. Unwraps the { result, storage } envelope when present. */
   async view<T = unknown>(addr: string, method: string, params: unknown[] = []): Promise<T> {
     const raw = await this.call<any>('contract_call', [addr, method, params, null])

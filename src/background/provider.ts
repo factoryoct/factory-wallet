@@ -35,6 +35,9 @@ function validateTxRequest(d: any): void {
       if (!Array.isArray(c.params)) throw new Error('sub-call params must be an array')
       if (!isMicro(c.value)) throw new Error('invalid sub-call value (micro-OCT integer)')
     }
+  } else if (d.kind === 'deploy') {
+    if (typeof d.bytecode !== 'string' || d.bytecode.length === 0) throw new Error('deploy: missing bytecode')
+    if (d.params !== undefined && !Array.isArray(d.params)) throw new Error('deploy: params must be an array')
   } else {
     throw new Error('unknown tx kind')
   }
@@ -199,6 +202,7 @@ export class ProviderController {
       const m = d.kind === 'transfer' ? { type: 'send', address: d.address, to: d.to, oct: d.oct }
         : d.kind === 'call' ? { type: 'call', address: d.address, contract: d.contract, method: d.method, params: d.params, valueOct: d.valueOct }
         : d.kind === 'multiExec' ? { type: 'multiExec', address: d.address, calls: d.calls }
+        : d.kind === 'deploy' ? { type: 'deploy', address: d.address, bytecode: d.bytecode, params: d.params, ou: d.ou }
         : null
       if (!m) throw new Error('unknown tx kind')
       return p.sendResponse({ ok: true, res: await this.wallet.handle(m as any) })

@@ -44,6 +44,10 @@ export default defineUnlistedScript(() => {
     call: (contract: string, method: string, params: (string | number)[], valueOct?: number) =>
       request({ method: 'octra_signAndSend', params: [{ kind: 'call', contract, method, params, valueOct }] }),
     multiExec: (calls: any[]) => request({ method: 'octra_signAndSend', params: [{ kind: 'multiExec', calls }] }),
+    // Deploy a contract: sign+submit an op_type "deploy" tx in the extension. Returns
+    // { hash, contractAddress }. bytecode = base64 (compile via RPC octra_compileAml first).
+    deploy: (bytecode: string, params: (string | number)[], ou?: string) =>
+      request({ method: 'octra_signAndSend', params: [{ kind: 'deploy', bytecode, params, ou }] }),
   }
 
   ;(window as any).octra = provider

@@ -6,7 +6,7 @@ import { Keyring } from '../core/keyring'
 import { deriveVaultKey, encryptWithKey, decryptWithKey, importVaultKey, exportVaultKey, defaultKdfMeta, vaultMeta, type Vault, type KdfMeta } from '../core/vault'
 import { OctraRpc } from '../core/rpc'
 import { buildSignedTransfer, toMicro, nowTimestamp } from '../core/tx'
-import { buildSignedCall, buildSignedMultiExec, buildSignedEncrypt, type MultiCall } from '../core/contract'
+import { buildSignedCall, buildSignedMultiExec, buildSignedEncrypt, buildSignedDeploy, type MultiCall } from '../core/contract'
 import { positionAmounts } from '../core/amm'
 import { isValidAddress } from '../core/address'
 import { base64ToBytes, bytesToBase64, bytesToHex } from '../core/encoding'
@@ -33,7 +33,7 @@ export const NETWORKS = [
 
 // Default token list used to seed the wallet on first run; user-managed after that.
 const KNOWN_TOKENS = [
-  { symbol: 'FACT', address: 'octG3mZ3ZwNAe3LYyhg23x3qSoVRewD9V8MGeZbmj7ZKuLP' },
+  { symbol: 'FACT', address: 'octCNJqKig9nXd78YiB64dLAaH1y6NJ9RVyhVTmoZfpbR4T' },
 ]
 
 function requireAddress(a: string): string {
@@ -85,6 +85,7 @@ type Msg =
   | { type: 'sendToken'; address: string; token: string; to: string; amountMicro: string }
   | { type: 'call'; address: string; contract: string; method: string; params: (string | number)[]; valueOct?: number }
   | { type: 'multiExec'; address: string; calls: MultiCall[] }
+  | { type: 'deploy'; address: string; bytecode: string; params?: (string | number)[]; ou?: string }
 
 export class WalletService {
   private keyring: Keyring | null = null
@@ -162,6 +163,23 @@ export class WalletService {
       const hash = await this.rpc.sendRawTransaction(body)
       this.pendingNonce[address] = nonce
       return { hash }
+    }
+    const p = this.signingQueue.then(run, run)
+    this.signingQueue = p.then(() => {}, () => {})
+    return p
+  }
+
+  /** Deploy variant of signTx: the contract address depends on the nonce, so it is computed
+   * inside the serialized slot (after the nonce is fixed) and returned to the caller. */
+  private async signDeploy(address: string, bytecode: string, params: (string | number)[], ou: string | undefined, kp: Keypair): Promise<{ hash: string; contractAddress: string }> {
+    const run = async () => {
+      const acct = await this.rpc.account(address)
+      const nonce = Math.max(acct.nonce + 1, (this.pendingNonce[address] ?? 0) + 1)
+      const to = await this.rpc.computeContractAddress(bytecode, address, nonce)
+      const { body } = buildSignedDeploy({ from: address, to, bytecode, params, ou, nonce, timestamp: nowTimestamp() }, kp)
+      const hash = await this.rpc.sendRawTransaction(body)
+      this.pendingNonce[address] = nonce
+      return { hash, contractAddress: to }
     }
     const p = this.signingQueue.then(run, run)
     this.signingQueue = p.then(() => {}, () => {})
@@ -469,6 +487,12 @@ export class WalletService {
             from: msg.address, amount: BigInt(msg.amountMicro), encryptedData: msg.encryptedData,
             opType: msg.opType, ou: msg.ou, nonce, timestamp: nowTimestamp(),
           }, kp))
+      }
+
+      case 'deploy': {
+        const kp = this.requireUnlocked().keypair(msg.address)
+        if (!msg.bytecode) throw new Error('deploy: missing bytecode')
+        return this.signDeploy(msg.address, msg.bytecode, msg.params ?? [], msg.ou, kp)
       }
 
       default:

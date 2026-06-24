@@ -44,6 +44,46 @@ export function buildSignedCall(i: CallIntent, kp: Keypair) {
   return { body, preimage }
 }
 
+// ── deploy (op_type "deploy") ───────────────────────────────────────────────
+// CONFIRMED end-to-end on devnet (self-signed deploy accepted, contract live, get()=ctor arg).
+// Same 9-field canonical as a call, but op_type "deploy", to_ = the deterministic contract
+// address (octra_computeContractAddress(bytecode, from, nonce)), encrypted_data = the base64
+// BYTECODE (not a method name), message = JSON.stringify(constructor params). All 9 signed.
+// The node re-derives to_ from the submitted bytecode, so signing to_ pins the code. `to`
+// depends on the nonce, so it is precomputed before signing (see service 'deploy' case).
+
+export interface DeployIntent {
+  from: string
+  to: string                    // precomputed = computeContractAddress(bytecode, from, nonce)
+  bytecode: string              // base64
+  params: (string | number)[]
+  ou?: string                   // deploys are heavy; default '200000'
+  nonce: number
+  timestamp: number
+}
+
+function deployObject(i: DeployIntent): Record<string, unknown> {
+  return {
+    from: i.from,
+    to_: i.to,
+    amount: '0',
+    nonce: i.nonce,
+    ou: i.ou ?? '200000',
+    timestamp: i.timestamp,
+    op_type: 'deploy',
+    encrypted_data: i.bytecode,
+    message: JSON.stringify(i.params),
+  }
+}
+
+export function buildSignedDeploy(i: DeployIntent, kp: Keypair) {
+  const obj = deployObject(i)
+  const preimage = JSON.stringify(obj)
+  const sig = sign(new TextEncoder().encode(preimage), kp.privateKey)
+  const body = { ...obj, signature: bytesToBase64(sig), public_key: bytesToBase64(kp.publicKey) }
+  return { body, preimage }
+}
+
 // ── encrypt / decrypt (shield / unshield) ───────────────────────────────────
 // op_type "encrypt": to_ = self, amount = micro-OCT to shield, and the privacy payload
 // {cipher,amount_commitment,zero_proof,blinding} goes JSON-stringified into encrypted_data.
