@@ -130,9 +130,18 @@ export class ProviderController {
     this.updateBadge()
     try { (chrome.action as any)?.openPopup?.()?.catch?.(() => { /* */ }) } catch { /* */ }
     const t0 = Date.now()
-    setTimeout(() => {
+    setTimeout(async () => {
       if (this.pending.size === 0) return
       if (this.lastPing > t0) return   // a live popup heartbeat landed; it will render the request
+      // Only pop a standalone window if the wallet is UNLOCKED. If it is locked, opening a
+      // window would ambush the user with a PASSWORD prompt over whatever app they switched
+      // to (App.tsx shows the unlock screen before any approval). The toolbar badge is enough
+      // then — they open the wallet when ready, unlock once, and the pending approval follows.
+      try {
+        const s = await this.wallet.handle({ type: 'status' }) as { unlocked?: boolean }
+        if (!s?.unlocked) return   // locked: leave the badge, do not surface a window
+      } catch { /* status unavailable — fall through and surface as before */ }
+      if (this.pending.size === 0 || this.lastPing > t0) return
       this.openApprovalWindow()
     }, 1000)
   }
