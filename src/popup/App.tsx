@@ -111,21 +111,31 @@ export function App() {
     return false
   }
   useEffect(() => {
-    (async () => {
-      // Retry status: when the popup window opens (e.g. to show an approval) the MV3 service
-      // worker may be cold/busy and the first message can throw. NEVER fall back to the onboard
-      // (create-wallet) screen on a transient error — that showed the registration screen
-      // instead of the pending approval. Show 'locked' if the SW stays unreachable.
+    let cancelled = false
+    ;(async () => {
+      // When this is the auto-opened approval window the MV3 service worker may be cold/busy:
+      // the first status() can throw or briefly answer before it has rehydrated the unlocked
+      // state. Stay on the neutral 'loading' screen and poll until we get a DEFINITIVE answer —
+      // unlocked (-> show the approval), no-vault (-> onboard), or several consistent 'locked'
+      // (-> the unlock screen). This stops the window from flashing a spurious password prompt
+      // for an unlocked wallet, and never dead-ends on the create-wallet screen.
       let s: { hasVault: boolean; unlocked: boolean } | null = null
-      for (let i = 0; i < 10 && !s; i++) {
-        try { s = await api.status() } catch { await new Promise(r => setTimeout(r, 250)) }
+      let lockedSeen = 0
+      for (let i = 0; i < 25 && !cancelled; i++) {
+        try { s = await api.status() } catch { s = null }
+        if (s?.unlocked) break
+        if (s && !s.hasVault) break
+        if (s && !s.unlocked) { lockedSeen++; if (lockedSeen >= 4) break }
+        await new Promise(r => setTimeout(r, 200))
       }
+      if (cancelled) return
       if (!s) return setView('locked')
       if (!s.hasVault) return setView('onboard')
       if (!s.unlocked) return setView('locked')
       try { await applyAccounts(await api.accounts()) } catch { /* */ }
       if (!(await checkApproval())) setView('dash')
     })()
+    return () => { cancelled = true }
   }, [])
   // Heartbeat so the background knows a popup is alive and need not open a separate window.
   useEffect(() => {
