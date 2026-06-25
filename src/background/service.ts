@@ -142,16 +142,26 @@ export class WalletService {
   // Rehydrate the unlocked state from the session cache after an SW restart.
   private async ensureUnlocked() {
     if (this.keyring) return
-    try {
-      const r = await chrome.storage.session.get(SESSION_KEY)
-      const s = r[SESSION_KEY] as { keyB64: string; salt: string; meta: KdfMeta } | undefined
-      if (!s) return
-      const vault = await this.loadVault()
-      if (!vault) return
-      const key = await importVaultKey(base64ToBytes(s.keyB64))
-      this.keyring = Keyring.deserialize(await decryptWithKey(vault, key))
-      this.vkey = key; this.vsalt = base64ToBytes(s.salt); this.vmeta = s.meta
-    } catch { /* corrupt session -> stay locked */ }
+    const vault = await this.loadVault()
+    if (!vault) return   // no wallet set up -> nothing to rehydrate
+    // chrome.storage.session can momentarily read back EMPTY right after the service worker
+    // wakes (e.g. the wake that opens an approval window). That made status() report the wallet
+    // LOCKED, so the auto-opened approval window flashed a password screen even though the
+    // wallet was unlocked. Retry the session read a few times so the unlocked state rehydrates
+    // reliably; only conclude "locked" if the session stays absent (the genuine locked case).
+    for (let attempt = 0; attempt < 5 && !this.keyring; attempt++) {
+      try {
+        const r = await chrome.storage.session.get(SESSION_KEY)
+        const s = r[SESSION_KEY] as { keyB64: string; salt: string; meta: KdfMeta } | undefined
+        if (s) {
+          const key = await importVaultKey(base64ToBytes(s.keyB64))
+          this.keyring = Keyring.deserialize(await decryptWithKey(vault, key))
+          this.vkey = key; this.vsalt = base64ToBytes(s.salt); this.vmeta = s.meta
+          return
+        }
+      } catch { /* transient read error -> retry */ }
+      if (attempt < 4) await new Promise(res => setTimeout(res, 70))
+    }
   }
 
   /** Serialize a signing op and assign a non-colliding nonce. */
