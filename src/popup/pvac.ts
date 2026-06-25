@@ -20,7 +20,8 @@ let workerBroken = false   // disable the worker for the session after a failure
 let seq = 0
 const waiting = new Map<number, { resolve: (v: bigint) => void; reject: (e: unknown) => void }>()
 function dropWorker() {
-  workerBroken = true
+  // Do NOT permanently disable the worker — a fresh one is created on the next decrypt, so a
+  // one-off failure doesn't force every later read onto the main thread (which froze the UI).
   for (const [, w] of waiting) w.reject(new Error('worker unavailable'))
   waiting.clear()
   try { worker?.terminate() } catch { /* */ }
@@ -155,15 +156,16 @@ export async function readPrivateBalance(address: string, rpcUrl: string): Promi
       if (hit && hit.cipher === cipher) {
         priv = BigInt(hit.value)                     // unchanged -> instant, no wasm
       } else {
-        // changed -> decrypt once (heavy). Off the UI thread; fall back in-thread on failure.
+        // changed -> decrypt once (heavy). ALWAYS off the UI thread (worker). If the worker
+        // fails, show the private balance as unavailable (null) instead of decrypting on the
+        // MAIN thread — running the FHE wasm on the popup thread blocked the whole wallet for
+        // seconds (incl. the lock button) and was the freeze. The worker is retried next load.
         try {
           priv = await decryptInWorker(seedHex, cipher)
+          await writeCache(k, address, rpcUrl, cipher, priv.toString(), aes)
         } catch {
-          const m = await loadMod()
-          const { ctx } = await getDecryptCtx(address, seed)
-          priv = ctx.decrypt(m.decodeCipher(cipher))
+          priv = null
         }
-        await writeCache(k, address, rpcUrl, cipher, priv.toString(), aes)
       }
     }
   } catch {

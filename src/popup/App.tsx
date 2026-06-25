@@ -112,8 +112,15 @@ export function App() {
   }
   useEffect(() => {
     (async () => {
-      let s: { hasVault: boolean; unlocked: boolean }
-      try { s = await api.status() } catch { return setView('onboard') }
+      // Retry status: when the popup window opens (e.g. to show an approval) the MV3 service
+      // worker may be cold/busy and the first message can throw. NEVER fall back to the onboard
+      // (create-wallet) screen on a transient error — that showed the registration screen
+      // instead of the pending approval. Show 'locked' if the SW stays unreachable.
+      let s: { hasVault: boolean; unlocked: boolean } | null = null
+      for (let i = 0; i < 10 && !s; i++) {
+        try { s = await api.status() } catch { await new Promise(r => setTimeout(r, 250)) }
+      }
+      if (!s) return setView('locked')
       if (!s.hasVault) return setView('onboard')
       if (!s.unlocked) return setView('locked')
       try { await applyAccounts(await api.accounts()) } catch { /* */ }
@@ -157,7 +164,7 @@ export function App() {
   else if (view === 'activity') content = <ActivityView acct={acct} back={() => go('dash')} />
   else if (view === 'connected') content = <ConnectedView back={() => go(connBack)} setErr={setErr} />
   else if (view === 'addaccount') content = <AddAccountView onDone={a => { setAccounts(a); setSel(a.length - 1); go(addBack) }} back={() => go(addBack)} setErr={setErr} />
-  else if (view === 'settings') content = <SettingsView accounts={accounts} sel={sel} setSel={setSel} setAccounts={setAccounts} back={() => go('dash')} onLock={async () => { await api.lock(); import('./pvac').then(m => m.clearPvac()).catch(() => {}); go('locked') }} onReset={async () => { try { await api.reset() } catch { /* */ } setAccounts([]); setSel(0); go('onboard') }} setErr={setErr} openConnected={openConnected} openAddAccount={openAddAccount} />
+  else if (view === 'settings') content = <SettingsView accounts={accounts} sel={sel} setSel={setSel} setAccounts={setAccounts} back={() => go('dash')} onLock={() => { go('locked'); import('./pvac').then(m => m.clearPvac()).catch(() => {}); api.lock().catch(() => {}) }} onReset={async () => { try { await api.reset() } catch { /* */ } setAccounts([]); setSel(0); go('onboard') }} setErr={setErr} openConnected={openConnected} openAddAccount={openAddAccount} />
 
   return (
     <div style={{ minHeight: 600, background: bg }}>
