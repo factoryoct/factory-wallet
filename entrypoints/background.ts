@@ -22,6 +22,7 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // dapp provider request (from a content script) — origin is browser-set, page-unforgeable
     if (msg && msg.__provider) {
+      armAutoLock()   // using a connected dapp counts as activity — don't auto-lock mid-use
       const origin = sender.origin || (sender.url ? new URL(sender.url).origin : 'unknown')
       provider.handle(origin, { method: msg.method, params: msg.params ?? [] }, sendResponse)
       return true

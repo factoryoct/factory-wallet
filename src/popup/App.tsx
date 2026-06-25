@@ -140,6 +140,23 @@ export function App() {
     const t = setInterval(() => { checkApproval() }, 2000)
     return () => clearInterval(t)
   }, [view])
+  // Self-heal the unlock screen: the approval window can open while the service worker is
+  // cold and briefly throws / reports locked, landing on the password screen even though the
+  // wallet is unlocked. Keep polling; the moment the SW confirms it is unlocked, advance to
+  // the pending approval (or dashboard) automatically — no spurious password prompt.
+  useEffect(() => {
+    if (view !== 'locked') return
+    const t = setInterval(async () => {
+      try {
+        const s = await api.status()
+        if (s.unlocked) {
+          try { await applyAccounts(await api.accounts()) } catch { /* */ }
+          if (!(await checkApproval())) setView('dash')
+        }
+      } catch { /* keep waiting for the SW */ }
+    }, 1000)
+    return () => clearInterval(t)
+  }, [view])
   useEffect(() => { if (view === 'dash' && !accounts.length) api.accounts().then(applyAccounts).catch(() => {}) }, [view, accounts.length])
   // Persist the selected account whenever it changes.
   useEffect(() => { const a = accounts[sel]; if (a) api.setSelected(a.address).catch(() => {}) }, [sel])
