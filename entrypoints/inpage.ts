@@ -51,6 +51,10 @@ export default defineUnlistedScript(() => {
   }
 
   ;(window as any).octra = provider
+  // Also expose under a unique, collision-proof name. Other Octra wallets (0xio, etc.) may
+  // overwrite window.octra, so a dapp that wants OUR provider specifically reads this one —
+  // it is never clobbered by another extension.
+  ;(window as any).factoryWallet = provider
   // discovery: let dapps know an Octra provider is present (own event, EIP-6963 is EVM-only)
   window.dispatchEvent(new CustomEvent('octra:announceProvider', { detail: { info: { name: 'factory wallet', rdns: 'xyz.factory.wallet' }, provider } }))
   window.dispatchEvent(new Event('octra#initialized'))

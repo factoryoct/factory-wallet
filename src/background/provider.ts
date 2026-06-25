@@ -100,9 +100,11 @@ export class ProviderController {
         case 'octra_signAndSend': {
           const addr = this.perms[origin]
           if (!addr) return sendResponse({ ok: false, error: 'not connected' })
-          const status = await w({ type: 'status' }) as { unlocked: boolean }
-          if (!status.unlocked) return sendResponse({ ok: false, error: 'wallet locked' })
           try { validateTxRequest(msg.params?.[0]) } catch (e) { return sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }) }
+          // Do NOT reject when locked. Open the approval popup: App.tsx shows the unlock
+          // screen first, then renders this pending request right after the user enters their
+          // password. So clicking swap/add-liquidity/collect on a locked wallet prompts for
+          // the password instead of erroring with "wallet locked".
           return this.open(origin, 'tx', { ...msg.params[0], address: addr }, sendResponse)
         }
         default:
