@@ -130,17 +130,13 @@ export class ProviderController {
   // open a dedicated window instead.
   private surface() {
     this.updateBadge()
+    // Open the toolbar popup when a browser window is focused (it rides the user gesture from a
+    // dapp action). We deliberately do NOT open a separate popup WINDOW as a fallback: that
+    // raced the cold service worker and popped a spurious unlock/PASSWORD window even though the
+    // wallet was unlocked AND the request was already reachable from the toolbar. The toolbar
+    // badge is the signal — the user clicks the extension icon and the pending approval renders
+    // in the toolbar popup.
     try { (chrome.action as any)?.openPopup?.()?.catch?.(() => { /* */ }) } catch { /* */ }
-    const t0 = Date.now()
-    setTimeout(() => {
-      if (this.pending.size === 0) return
-      if (this.lastPing > t0) return   // a live toolbar popup is alive and will render the request
-      // No popup is handling it (the user is on another window, so openPopup() couldn't open) —
-      // open a dedicated window so a follow-up approval surfaces on its own instead of sitting as
-      // just a badge. The window's boot now waits for the (possibly cold) service worker and
-      // renders the approval directly, so it no longer flashes a spurious password screen.
-      this.openApprovalWindow()
-    }, 1000)
   }
 
   private async openApprovalWindow() {
