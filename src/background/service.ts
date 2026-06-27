@@ -41,6 +41,8 @@ function requireAddress(a: string): string {
   return a
 }
 
+const isNonceError = (e: unknown) => /nonce/i.test(String((e as { message?: unknown })?.message ?? ''))
+
 // fetch JSON with a couple of retries.
 async function fetchJson(url: string, tries = 3): Promise<any> {
   for (let i = 0; i < tries; i++) {
@@ -154,16 +156,19 @@ export class WalletService {
     } catch { /* corrupt session -> stay locked */ }
   }
 
-  /** Serialize a signing op and assign a non-colliding nonce. */
+  /** Serialize a signing op and assign a non-colliding nonce; on a nonce rejection, resync from
+   * the chain and resubmit once. */
   private async signTx(address: string, build: (nonce: number) => { body: Record<string, unknown> }): Promise<{ hash: string }> {
-    const run = async () => {
+    const attempt = async (resync: boolean) => {
       const acct = await this.rpc.account(address)
+      if (resync) this.pendingNonce[address] = acct.nonce
       const nonce = Math.max(acct.nonce + 1, (this.pendingNonce[address] ?? 0) + 1)
       const { body } = build(nonce)
       const hash = await this.rpc.sendRawTransaction(body)
       this.pendingNonce[address] = nonce
       return { hash }
     }
+    const run = () => attempt(false).catch(e => isNonceError(e) ? attempt(true) : Promise.reject(e))
     const p = this.signingQueue.then(run, run)
     this.signingQueue = p.then(() => {}, () => {})
     return p
@@ -172,8 +177,9 @@ export class WalletService {
   /** Deploy variant of signTx: the contract address depends on the nonce, so it is computed
    * inside the serialized slot (after the nonce is fixed) and returned to the caller. */
   private async signDeploy(address: string, bytecode: string, params: (string | number)[], ou: string | undefined, kp: Keypair): Promise<{ hash: string; contractAddress: string }> {
-    const run = async () => {
+    const attempt = async (resync: boolean) => {
       const acct = await this.rpc.account(address)
+      if (resync) this.pendingNonce[address] = acct.nonce
       const nonce = Math.max(acct.nonce + 1, (this.pendingNonce[address] ?? 0) + 1)
       const to = await this.rpc.computeContractAddress(bytecode, address, nonce)
       const { body } = buildSignedDeploy({ from: address, to, bytecode, params, ou, nonce, timestamp: nowTimestamp() }, kp)
@@ -181,6 +187,7 @@ export class WalletService {
       this.pendingNonce[address] = nonce
       return { hash, contractAddress: to }
     }
+    const run = () => attempt(false).catch(e => isNonceError(e) ? attempt(true) : Promise.reject(e))
     const p = this.signingQueue.then(run, run)
     this.signingQueue = p.then(() => {}, () => {})
     return p

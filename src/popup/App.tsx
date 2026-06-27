@@ -7,7 +7,19 @@ import { useT, useLang, LANGS } from './i18n'
 const F = 'Tahoma, Arial, sans-serif'
 const M = '"SF Mono", Consolas, Monaco, monospace'
 const ink = '#2c3e57', muted = '#7a8fa8', accent = '#3b567f', border = '#c8d0db', bg = '#eef1f5'
+
+const explorerTxUrl = (networkUrl: string, hash: string) =>
+  `${networkUrl.includes('devnet') ? 'https://devnet.octrascan.io' : 'https://octrascan.io'}/tx.html?hash=${hash}`
 const FACTORY_FAUCET = 'https://factory-amm.xyz/faucet'
+
+type DashCache = { bal: string; tokens: { symbol: string; balance: string; native: boolean }[] }
+const dashCacheKey = (addr: string) => `fw_dash_${addr}`
+const readDashCache = (addr: string): DashCache | null => {
+  try { const s = localStorage.getItem(dashCacheKey(addr)); return s ? JSON.parse(s) as DashCache : null } catch { return null }
+}
+const writeDashCache = (addr: string, data: DashCache) => {
+  try { localStorage.setItem(dashCacheKey(addr), JSON.stringify(data)) } catch { /* */ }
+}
 
 const btn: CSSProperties = { fontFamily: F, fontSize: 14, fontWeight: 600, color: '#fff', background: accent, border: 'none', padding: '11px 16px', cursor: 'pointer', width: '100%' }
 const input: CSSProperties = { fontFamily: M, fontSize: 13, padding: '10px 12px', border: `1px solid ${border}`, background: '#fff', width: '100%', outline: 'none' }
@@ -222,8 +234,8 @@ function TopBar({ title, back }: { title: string; back?: () => void }) {
 function Dashboard({ acct, accounts, sel, setSel, setAccounts, go, open, openConnected, openAddAccount, setErr }:
   { acct: AccountView; accounts: AccountView[]; sel: number; setSel: (n: number) => void; setAccounts: (a: AccountView[]) => void; go: (v: View) => void; open: (u: string) => void; openConnected: (from: View) => void; openAddAccount: (from: View) => void; setErr: (s: string) => void }) {
   const t = useT()
-  const [bal, setBal] = useState<string | null>(null)
-  const [tokens, setTokens] = useState<{ symbol: string; balance: string; native: boolean }[]>([])
+  const [bal, setBal] = useState<string | null>(() => readDashCache(acct.address)?.bal ?? null)
+  const [tokens, setTokens] = useState<{ symbol: string; balance: string; native: boolean }[]>(() => readDashCache(acct.address)?.tokens ?? [])
   const [price, setPrice] = useState<{ usd: number; change24h: number } | null>(null)
   const [chart, setChart] = useState<number[]>([])
   const [sites, setSites] = useState(0)
@@ -250,18 +262,22 @@ function Dashboard({ acct, accounts, sel, setSel, setAccounts, go, open, openCon
   }
   useEffect(() => { setPriv(null); setPrivErr(''); loadPriv() }, [acct.address, net.url])
 
-  const loadTokens = () => api.tokens(acct.address).then(setTokens).catch(() => { /* */ })
+  const loadTokens = () => api.tokens(acct.address).then(tk => { setTokens(tk); return tk }).catch(() => null)
   const reloadToks = async () => { setTokBusy(true); try { await loadTokens() } finally { setTokBusy(false) } }
   const refresh = () => {
     setSpinning(true)
-    if (bal === null) { /* first load shows … */ }
     Promise.all([
-      api.balance(acct.address).then(b => setBal(b.balance)).catch(() => setBal('?')),
+      api.balance(acct.address).then(b => { setBal(b.balance); return b.balance }).catch(() => { setBal('?'); return null }),
       loadTokens(),
       api.sites().then(s => setSites(s.length)).catch(() => { /* */ }),
-    ]).finally(() => setTimeout(() => setSpinning(false), 500))
+    ]).then(([b, tk]) => { if (b && b !== '?' && tk) writeDashCache(acct.address, { bal: b, tokens: tk }) })
+      .finally(() => setTimeout(() => setSpinning(false), 500))
   }
-  useEffect(() => { refresh() }, [acct.address])
+  useEffect(() => {
+    const c = readDashCache(acct.address)
+    setBal(c?.bal ?? null); setTokens(c?.tokens ?? [])
+    refresh()
+  }, [acct.address])
   useEffect(() => {
     api.octPrice().then(setPrice).catch(() => { /* */ })
     api.getNetwork().then(setNet).catch(() => { /* */ })
@@ -418,12 +434,13 @@ function SendView({ acct, back, setErr }: { acct: AccountView; back: () => void;
   const t = useT()
   const [toks, setToks] = useState<{ symbol: string; balance: string; native: boolean; address: string }[]>([])
   const [tokIdx, setTokIdx] = useState(0)
-  const [to, setTo] = useState(''); const [amt, setAmt] = useState(''); const [busy, setBusy] = useState(false); const [hash, setHash] = useState('')
+  const [to, setTo] = useState(''); const [amt, setAmt] = useState(''); const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; hash?: string; link?: string; error?: string } | null>(null)
   useEffect(() => { api.tokens(acct.address).then(setToks).catch(() => setToks([])) }, [acct.address])
   const tok = toks[tokIdx]
   const fmtBal = (b: string) => Number(b).toLocaleString(undefined, { maximumFractionDigits: 6 })
   const send = async () => {
-    setErr(''); setHash('')
+    setErr('')
     const v = Number(amt)
     if (!/^oct[1-9A-HJ-NP-Za-km-z]{44}$/.test(to.trim())) return setErr(t('invalid_recipient'))
     if (!(v > 0)) return setErr(t('invalid_amount'))
@@ -432,9 +449,29 @@ function SendView({ acct, back, setErr }: { acct: AccountView; back: () => void;
       const r = (!tok || tok.native)
         ? await api.send(acct.address, to.trim(), v)
         : await api.sendToken(acct.address, tok.address, to.trim(), String(Math.round(v * 1e6)))
-      setHash(r.hash); setTo(''); setAmt('')
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+      const link = await api.getNetwork().then(n => explorerTxUrl(n.url, r.hash)).catch(() => '')
+      setResult({ ok: true, hash: r.hash, link }); setTo(''); setAmt('')
+    } catch (e) { setResult({ ok: false, error: e instanceof Error ? e.message : String(e) }) } finally { setBusy(false) }
   }
+
+  if (result) return (
+    <div>
+      <TopBar title={t('send')} back={back} />
+      <div style={{ ...pad, alignItems: 'center', textAlign: 'center', paddingTop: 28 }}>
+        <div style={{ width: 56, height: 56, borderRadius: '50%', background: result.ok ? '#e3f1e8' : '#f7e3e3', color: result.ok ? '#3b7f5a' : '#9a3b3b', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {result.ok ? <Ic d={ICONS.check} size={28} /> : <span style={{ fontFamily: F, fontSize: 30, fontWeight: 700 }}>!</span>}
+        </div>
+        <div style={{ fontFamily: F, fontSize: 16, fontWeight: 700, color: ink }}>{result.ok ? t('sent') : 'failed'}</div>
+        {result.ok
+          ? <div style={{ fontFamily: M, fontSize: 11, color: muted, wordBreak: 'break-all' }}>{result.hash}</div>
+          : <div style={{ fontFamily: F, fontSize: 12.5, color: '#9a3b3b', wordBreak: 'break-word' }}>{result.error}</div>}
+        {result.ok && result.link && <a href={result.link} target="_blank" rel="noopener noreferrer" style={{ fontFamily: F, fontSize: 13, color: accent }}>view on explorer</a>}
+        <button style={btn} onClick={result.ok ? back : () => setResult(null)}>{result.ok ? 'done' : 'try again'}</button>
+        {result.ok && <button style={{ ...btn, background: '#fff', color: ink, border: `1px solid ${border}` }} onClick={() => setResult(null)}>send another</button>}
+      </div>
+    </div>
+  )
+
   return (
     <div>
       <TopBar title={t('send')} back={back} />
@@ -455,7 +492,6 @@ function SendView({ acct, back, setErr }: { acct: AccountView; back: () => void;
           </div>
         </div>
         <button style={{ ...btn, opacity: busy ? 0.6 : 1 }} disabled={busy} onClick={send}>{busy ? t('sending') : t('send')}</button>
-        {hash && <div style={{ fontFamily: M, fontSize: 11, color: '#3b7f5a', wordBreak: 'break-all' }}>{t('sent')}: {hash}</div>}
       </div>
     </div>
   )
@@ -504,9 +540,8 @@ function PrivacyView({ acct, back, setErr }: { acct: AccountView; back: () => vo
       let h: string
       if (tab === 'encrypt') { setMsg(t('encrypting')); h = await pvac.shield(acct.address, micro, gas) }
       else { setMsg(t('decrypting')); h = await pvac.unshield(acct.address, micro, url, gas) }
-      const base = url.includes('devnet') ? 'https://devnet.octrascan.io' : 'https://octrascan.io'
       setMsg(tab === 'encrypt' ? 'encrypt submitted, confirming…' : 'decrypt submitted, confirming…')
-      setTxLink(`${base}/tx.html?hash=${h}`)
+      setTxLink(explorerTxUrl(url, h))
       setAmt(''); setTimeout(load, 6000)
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setMsg('') } finally { setBusy(false) }
   }

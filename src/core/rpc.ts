@@ -1,6 +1,7 @@
 // JSON-RPC client for the Octra node.
 
 export const DEFAULT_RPC = 'https://devnet.octrascan.io/rpc'
+const REQUEST_TIMEOUT_MS = 15_000
 
 export interface AccountInfo {
   address: string
@@ -10,19 +11,51 @@ export interface AccountInfo {
   has_public_key: boolean
 }
 
+// A rejection returned by the node (vs a transport failure); never retried or failed over.
+class RpcError extends Error {}
+
 export class OctraRpc {
   private id = 1
-  constructor(public url: string = DEFAULT_RPC) {}
+  private endpoints: string[]
+  constructor(url: string = DEFAULT_RPC) { this.endpoints = [url] }
+
+  get url() { return this.endpoints[0] }
+  set url(u: string) { this.setEndpoints([u]) }
+
+  // Active endpoint plus any fallbacks; tried in order, the first that answers is promoted.
+  setEndpoints(urls: string[]) {
+    const list = [...new Set(urls.filter(Boolean))]
+    this.endpoints = list.length ? list : [DEFAULT_RPC]
+  }
 
   async call<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: this.id++, method, params }),
-    })
-    const j = await res.json()
-    if (j.error) throw new Error(`RPC[${method}]: ${JSON.stringify(j.error)}`)
-    return j.result as T
+    const body = JSON.stringify({ jsonrpc: '2.0', id: this.id++, method, params })
+    let lastErr: unknown
+    for (let pass = 0; pass < 2; pass++) {
+      for (const url of this.endpoints) {
+        try {
+          const j = await this.fetchRpc(url, body)
+          if (j.error) throw new RpcError(`RPC[${method}]: ${JSON.stringify(j.error)}`)
+          if (url !== this.endpoints[0]) this.endpoints = [url, ...this.endpoints.filter(e => e !== url)]
+          return j.result as T
+        } catch (e) {
+          if (e instanceof RpcError) throw e
+          lastErr = e
+        }
+      }
+      if (pass === 0) await sleep(300)
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(`RPC[${method}]: all endpoints failed`)
+  }
+
+  private async fetchRpc(url: string, body: string): Promise<any> {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS)
+    try {
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: ctrl.signal })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      return await res.json()
+    } finally { clearTimeout(timer) }
   }
 
   /** Account balance + nonce. */
