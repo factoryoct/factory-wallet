@@ -6,10 +6,14 @@ import type { WalletService } from './service'
 import { isValidAddress } from '../core/address'
 
 const PERM_KEY = 'fw_permissions'
+/* Отдельное разрешение — видеть скрытый остаток. Держим врозь от разрешения на
+   подключение: подключиться и подсмотреть скрытое — разные вещи, и второе
+   человек должен разрешить отдельно. */
+const PRIV_KEY = 'fw_private_view'
 
 interface Pending {
   sendResponse: (r: { ok: boolean; res?: unknown; error?: string }) => void
-  kind: 'connect' | 'tx' | 'sign' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'
+  kind: 'connect' | 'tx' | 'sign' | 'privbal' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'
   origin: string
   data: any
 }
@@ -45,6 +49,7 @@ function validateTxRequest(d: any): void {
 
 export class ProviderController {
   private perms: Record<string, string> = {}   // origin -> granted address
+  private privView: Record<string, true> = {}  // origin -> вправе видеть скрытый остаток
   private pending = new Map<string, Pending>()
   private ready: Promise<void>
   private approvalWindowId: number | null = null
@@ -53,13 +58,16 @@ export class ProviderController {
   constructor(private wallet: WalletService) {
     // Gate handling on the permission store being loaded (a request before load would
     // otherwise see empty perms).
-    this.ready = chrome.storage.local.get(PERM_KEY).then(r => { this.perms = (r[PERM_KEY] as Record<string, string>) ?? {} })
+    this.ready = chrome.storage.local.get([PERM_KEY, PRIV_KEY]).then(r => {
+      this.perms = (r[PERM_KEY] as Record<string, string>) ?? {}
+      this.privView = (r[PRIV_KEY] as Record<string, true>) ?? {}
+    })
     try { chrome.windows?.onRemoved?.addListener(id => { if (id === this.approvalWindowId) this.approvalWindowId = null }) } catch { /* */ }
   }
 
   /** The popup pings while open; this lets us tell whether one is alive to render a request. */
   ping() { this.lastPing = Date.now() }
-  private persist() { return chrome.storage.local.set({ [PERM_KEY]: this.perms }) }
+  private persist() { return chrome.storage.local.set({ [PERM_KEY]: this.perms, [PRIV_KEY]: this.privView }) }
 
   async handle(origin: string, msg: { method: string; params: any[] }, sendResponse: Pending['sendResponse']) {
     await this.ready
@@ -78,6 +86,7 @@ export class ProviderController {
           // revoke this origin's grant so a later requestAccounts re-prompts (lets the user
           // pick a different account instead of silently reconnecting the cached one)
           delete this.perms[origin]
+          delete this.privView[origin]
           await this.persist()
           return sendResponse({ ok: true, res: true })
         }
@@ -87,7 +96,19 @@ export class ProviderController {
         case 'octra_privateBalance': {
           const addr = this.perms[origin]
           if (!addr) return sendResponse({ ok: false, error: 'not connected' })
-          return sendResponse({ ok: true, res: await w({ type: 'privateBalanceCached', address: addr }) })
+          /* Скрытый остаток на то и скрытый: в цепи он лежит зашифрованным, и
+             прочесть его может только владелец ключа. Раньше он отдавался любому
+             подключённому месту молча — то есть подключение к сайту тихо
+             раскрывало ровно то, что человек прятал. Рядом стоит octra_fheDecrypt,
+             и он спрашивает согласия за то же самое.
+
+             Спрашиваем один раз на место: дальше оно помнится, иначе окно
+             всплывало бы при каждом открытии страницы. Снимается вместе с
+             отключением места. */
+          if (this.privView[origin]) {
+            return sendResponse({ ok: true, res: await w({ type: 'privateBalanceCached', address: addr }) })
+          }
+          return this.open(origin, 'privbal', { address: addr }, sendResponse)
         }
         case 'octra_requestAccounts': {
           if (this.perms[origin]) return sendResponse({ ok: true, res: [this.perms[origin]] })
@@ -185,9 +206,21 @@ export class ProviderController {
   }
 
   private open(origin: string, kind: Pending['kind'], data: any, sendResponse: Pending['sendResponse']) {
-    // at most one in-flight approval per origin, so a connected site can't spam popups.
-    for (const p of this.pending.values()) {
-      if (p.origin === origin) return sendResponse({ ok: false, error: 'a request is already pending for this origin' })
+    /* Не больше одного ожидающего запроса на место, иначе сайт завалит окнами.
+       Исключение — просьба показать скрытый остаток: её страница шлёт сама при
+       открытии, человек её не ждёт и нажимать не идёт. Провисев, она заперла бы
+       место, и настоящее действие — обмен, вклад — отвергалось бы со словами
+       «уже есть ожидающий запрос». Поэтому она не запирает и уступает: пришло
+       настоящее дело — её снимаем. */
+    for (const [id, p] of this.pending) {
+      if (p.origin !== origin) continue
+      if (p.kind === 'privbal' && kind !== 'privbal') {
+        this.pending.delete(id)
+        p.sendResponse({ ok: true, res: { value: null } })
+        continue
+      }
+      if (kind === 'privbal') return sendResponse({ ok: true, res: { value: null } })
+      return sendResponse({ ok: false, error: 'a request is already pending for this origin' })
     }
     // crypto.randomUUID so approval IDs are never reused across service-worker lifecycles.
     const id = 'apr_' + crypto.randomUUID()
@@ -249,6 +282,7 @@ export class ProviderController {
   async revoke(origin: string) {
     await this.ready
     delete this.perms[origin]
+    delete this.privView[origin]
     await this.persist()
   }
 
@@ -273,6 +307,11 @@ export class ProviderController {
       }
       if (p.kind === 'sign') {
         return p.sendResponse({ ok: true, res: await this.wallet.handle({ type: 'signMessage', address: p.data.address, message: p.data.message } as any) })
+      }
+      if (p.kind === 'privbal') {
+        this.privView[p.origin] = true
+        await this.persist()
+        return p.sendResponse({ ok: true, res: await this.wallet.handle({ type: 'privateBalanceCached', address: p.data.address } as any) })
       }
       if (p.kind === 'fheprove' || p.kind === 'fhedecrypt' || p.kind === 'fhedeposit' || p.kind === 'stealthsend' || p.kind === 'stealthscan' || p.kind === 'stealthviewpub') return p.sendResponse({ ok: false, error: 'resolves via resolveFheProve' })
       const d = p.data

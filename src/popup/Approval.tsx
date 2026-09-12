@@ -8,7 +8,7 @@ const F = 'Tahoma, Arial, sans-serif'
 const M = '"SF Mono", Consolas, Monaco, monospace'
 const ink = '#2c3e57', muted = '#7a8fa8', accent = '#3b567f', border = '#c8d0db'
 
-export interface ApprovalReq { id: string; kind: 'connect' | 'tx' | 'sign' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'; origin: string; data: any }
+export interface ApprovalReq { id: string; kind: 'connect' | 'tx' | 'sign' | 'privbal' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'; origin: string; data: any }
 const short = (a: string) => a ? a.slice(0, 8) + '…' + a.slice(-4) : ''
 
 // Rendered inside the main popup so the approval shares the wallet's window and styling. For a
@@ -51,7 +51,7 @@ export function ApprovalView({ req, accounts, selDefault, onDone }: {
   return (
     <div style={{ padding: 20, minHeight: 600, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontFamily: F, fontSize: 12, color: muted, textTransform: 'uppercase', letterSpacing: '1px' }}>
-        {req.kind === 'connect' ? t('connection_request') : req.kind === 'fheprove' ? 'private proof request' : req.kind === 'fhedecrypt' ? 'reveal private balance' : req.kind === 'fhedeposit' ? 'confidential deposit' : t('signature_request')}
+        {req.kind === 'connect' ? t('connection_request') : req.kind === 'privbal' ? 'see your private balance' : req.kind === 'fheprove' ? 'private proof request' : req.kind === 'fhedecrypt' ? 'reveal private balance' : req.kind === 'fhedeposit' ? 'confidential deposit' : t('signature_request')}
       </div>
       <SafeOrigin origin={req.origin} />
 
@@ -70,11 +70,11 @@ export function ApprovalView({ req, accounts, selDefault, onDone }: {
             </div>
           )}
         </Block>
-      ) : req.kind === 'sign' ? <SignSummary d={req.data} /> : req.kind === 'fheprove' ? <FheProveSummary d={req.data} /> : req.kind === 'fhedecrypt' ? <FheDecryptSummary /> : req.kind === 'fhedeposit' ? <FheDepositSummary d={req.data} /> : <TxSummary d={req.data} />}
+      ) : req.kind === 'sign' ? <SignSummary d={req.data} /> : req.kind === 'privbal' ? <PrivBalSummary /> : req.kind === 'fheprove' ? <FheProveSummary d={req.data} /> : req.kind === 'fhedecrypt' ? <FheDecryptSummary /> : req.kind === 'fhedeposit' ? <FheDepositSummary d={req.data} /> : <TxSummary d={req.data} />}
 
       <div style={{ display: 'flex', gap: 10, marginTop: 'auto' }}>
         <button disabled={busy} onClick={() => decide(false)} style={{ ...b, background: 'transparent', color: accent, border: `1px solid ${border}` }}>{t('reject')}</button>
-        <button disabled={busy} onClick={() => decide(true)} style={{ ...b }}>{busy ? '…' : req.kind === 'connect' ? t('connect') : req.kind === 'fhedecrypt' ? 'reveal' : req.kind === 'fhedeposit' ? 'deposit' : t('approve')}</button>
+        <button disabled={busy} onClick={() => decide(true)} style={{ ...b }}>{busy ? '…' : req.kind === 'connect' ? t('connect') : req.kind === 'privbal' ? 'allow' : req.kind === 'fhedecrypt' ? 'reveal' : req.kind === 'fhedeposit' ? 'deposit' : t('approve')}</button>
       </div>
     </div>
   )
@@ -153,6 +153,22 @@ function FheProveSummary({ d }: { d: any }) {
       <p style={{ fontFamily: F, fontSize: 12, color: muted, lineHeight: 1.5, margin: '10px 0 0' }}>
         the proof is built inside the wallet with your key. your key never leaves the wallet and the
         amounts are not revealed on-chain. no funds move and there is no fee for this.
+      </p>
+    </Block>
+  )
+}
+
+// Запрос на показ скрытого остатка самому сайту. Спрашивается один раз на место:
+// дальше сайт видит остаток без окна, пока человек не отключит его в списке
+// подключённых. Денег это не двигает и сбора не берёт.
+function PrivBalSummary() {
+  return (
+    <Block>
+      <div style={{ fontFamily: F, fontSize: 12, color: muted, marginBottom: 6 }}>this site wants to see your private balance</div>
+      <p style={{ fontFamily: F, fontSize: 12, color: muted, lineHeight: 1.5, margin: 0 }}>
+        your private balance is hidden on-chain and only your key can read it. allowing this lets
+        the site read the amount from now on, until you disconnect it. no funds move and there is
+        no fee.
       </p>
     </Block>
   )
