@@ -3,6 +3,7 @@
 // talk to it via runtime messages.
 
 import { Keyring } from '../core/keyring'
+import { sign } from '../core/keys'
 import { deriveVaultKey, encryptWithKey, decryptWithKey, importVaultKey, exportVaultKey, defaultKdfMeta, vaultMeta, type Vault, type KdfMeta } from '../core/vault'
 import { OctraRpc } from '../core/rpc'
 import { buildSignedTransfer, toMicro, nowTimestamp } from '../core/tx'
@@ -19,6 +20,60 @@ const TOKENS_KEY = 'fw_tokens'
 const DEFAULT_ITERS = 600_000
 // Pool-indexer holding a wallet's LP positions (pool + tick range). Overridable via fw_indexer.
 const DEFAULT_INDEXER = 'https://138.124.52.16.sslip.io'
+
+// Factory AMM stack (live octGmgc deploy). Overridable via chrome.storage.local
+// (fw_factory / fw_router / fw_quoter / fw_swaphelper / fw_woct).
+const FACTORY_ADDR    = 'octGmgcYUCJ1LMyKNihRLRKWTbmyfyDzkTSNxjet9fpyZKM'
+const WOCT_ADDR       = 'oct7Nt4BBbh6UCmuRjDLmQceew6TxkcYzmo5wcX9iEetY95'
+const ROUTER_ADDR     = 'octGt3GGL5AyvYtkkiqoKabr4nhydEq7hFDLX1vPhNvyJaC'
+const QUOTER_ADDR     = 'oct8PHLE4VdZ5bpFjatTraM8J84RoqYT9qgSV4w2z8cQo8n'
+const SWAPHELPER_ADDR = 'octGHsM8GaHfbHtyf7wHa4ZE5ZzHCtrc8YD4Kiy3jfLCTzz'
+const Q96 = 2n ** 96n
+
+interface PoolMeta { address: string; token0: string; token1: string; liquidity: number; sqrtPrice: string; router: string; fee: number }
+let _poolCache: PoolMeta[] | null = null
+let _poolCacheAt = 0
+async function fetchPools(rpc: OctraRpc, factory: string): Promise<PoolMeta[]> {
+  if (_poolCache && Date.now() - _poolCacheAt < 30_000) return _poolCache
+  if (!factory) return []
+  const out: PoolMeta[] = []
+  try {
+    const count = Number(await rpc.view(factory, 'get_pool_count', []))
+    const metas = await Promise.all(Array.from({ length: count }, (_, i) => i).map(async (i) => {
+      try {
+        const addr = String(await rpc.view(factory, 'get_pool_at', [i]))
+        const [tokens, slot0, liq, router, config] = await Promise.all([
+          rpc.viewTuple(addr, 'get_tokens', []),
+          rpc.viewTuple(addr, 'get_slot0', []),
+          rpc.view(addr, 'get_liquidity', []).catch(() => '0'),
+          rpc.view(addr, 'get_router', []).catch(() => ''),
+          rpc.viewTuple(addr, 'get_config', []).catch(() => [] as string[]),
+        ])
+        return { address: addr, token0: tokens[0], token1: tokens[1], liquidity: Number(liq) || 0, sqrtPrice: slot0[0] || '0', router: String(router || ''), fee: Number(config[0]) || 0 } as PoolMeta
+      } catch { return null }
+    }))
+    for (const m of metas) if (m) out.push(m)
+    if (out.length) { _poolCache = out; _poolCacheAt = Date.now() }
+  } catch { /* factory unreachable */ }
+  return out
+}
+// OCT value of 1 unit of the non-WOCT token in a WOCT pool (0 if bricked / no price).
+function tokenOctPrice(p: PoolMeta, woct: string): number {
+  if (!p.sqrtPrice || p.sqrtPrice === '0') return 0
+  const s = BigInt(p.sqrtPrice)
+  const price = Number((s * s * (10n ** 6n)) / (Q96 * Q96)) / 1e6
+  if (!(price > 0) || price < 1e-15 || price > 1e15) return 0
+  return p.token0 === woct ? 1 / price : price
+}
+// Deepest pool (max liquidity) for an unordered token pair on the current router, or null.
+function bestPoolForPair(pools: PoolMeta[], a: string, b: string, router: string): PoolMeta | null {
+  const cands = pools.filter(p =>
+    p.liquidity > 0 &&
+    (!router || !p.router || p.router === router) &&
+    ((p.token0 === a && p.token1 === b) || (p.token0 === b && p.token1 === a)))
+  if (!cands.length) return null
+  return cands.reduce((best, p) => (p.liquidity > best.liquidity ? p : best))
+}
 
 // Enforce the vault password policy in the background, not just the popup UI.
 function assertPasswordPolicy(pw: unknown): asserts pw is string {
@@ -86,8 +141,15 @@ type Msg =
   | { type: 'send'; address: string; to: string; oct: number }
   | { type: 'sendToken'; address: string; token: string; to: string; amountMicro: string }
   | { type: 'call'; address: string; contract: string; method: string; params: (string | number)[]; valueOct?: number }
-  | { type: 'multiExec'; address: string; calls: MultiCall[] }
+  | { type: 'multiExec'; address: string; calls: MultiCall[]; ou?: string }
   | { type: 'deploy'; address: string; bytecode: string; params?: (string | number)[]; ou?: string }
+  | { type: 'signMessage'; address: string; message: string }
+  | { type: 'txReceipt'; hash: string }
+  | { type: 'tokenSupply'; token: string }
+  | { type: 'swapQuote'; tokenIn: string; tokenOut: string; amountInMicro: string }
+  | { type: 'swap'; address: string; tokenIn: string; tokenOut: string; amountInMicro: string; minOutMicro: string; fee: number }
+  | { type: 'prices' }
+  | { type: 'priceSeries'; token: string }
 
 export class WalletService {
   private keyring: Keyring | null = null
@@ -159,16 +221,19 @@ export class WalletService {
   /** Serialize a signing op and assign a non-colliding nonce; on a nonce rejection, resync from
    * the chain and resubmit once. */
   private async signTx(address: string, build: (nonce: number) => { body: Record<string, unknown> }): Promise<{ hash: string }> {
-    const attempt = async (resync: boolean) => {
-      const acct = await this.rpc.account(address)
-      if (resync) this.pendingNonce[address] = acct.nonce
-      const nonce = Math.max(acct.nonce + 1, (this.pendingNonce[address] ?? 0) + 1)
-      const { body } = build(nonce)
+    const attempt = async (bump: number) => {
+      // The node counts a queued tx too, so take the pending nonce, not just the confirmed one.
+      const { nonce, pending } = await this.rpc.nonces(address)
+      if (bump > 0) this.pendingNonce[address] = 0          // resync: trust the chain again
+      const next = Math.max(nonce, pending, this.pendingNonce[address] ?? 0) + 1 + bump
+      const { body } = build(next)
       const hash = await this.rpc.sendRawTransaction(body)
-      this.pendingNonce[address] = nonce
+      this.pendingNonce[address] = next
       return { hash }
     }
-    const run = () => attempt(false).catch(e => isNonceError(e) ? attempt(true) : Promise.reject(e))
+    const run = () => attempt(0)
+      .catch(e => isNonceError(e) ? attempt(1) : Promise.reject(e))
+      .catch(e => isNonceError(e) ? attempt(2) : Promise.reject(e))
     const p = this.signingQueue.then(run, run)
     this.signingQueue = p.then(() => {}, () => {})
     return p
@@ -177,17 +242,19 @@ export class WalletService {
   /** Deploy variant of signTx: the contract address depends on the nonce, so it is computed
    * inside the serialized slot (after the nonce is fixed) and returned to the caller. */
   private async signDeploy(address: string, bytecode: string, params: (string | number)[], ou: string | undefined, kp: Keypair): Promise<{ hash: string; contractAddress: string }> {
-    const attempt = async (resync: boolean) => {
-      const acct = await this.rpc.account(address)
-      if (resync) this.pendingNonce[address] = acct.nonce
-      const nonce = Math.max(acct.nonce + 1, (this.pendingNonce[address] ?? 0) + 1)
-      const to = await this.rpc.computeContractAddress(bytecode, address, nonce)
-      const { body } = buildSignedDeploy({ from: address, to, bytecode, params, ou, nonce, timestamp: nowTimestamp() }, kp)
+    const attempt = async (bump: number) => {
+      const { nonce, pending } = await this.rpc.nonces(address)
+      if (bump > 0) this.pendingNonce[address] = 0
+      const next = Math.max(nonce, pending, this.pendingNonce[address] ?? 0) + 1 + bump
+      const to = await this.rpc.computeContractAddress(bytecode, address, next)
+      const { body } = buildSignedDeploy({ from: address, to, bytecode, params, ou, nonce: next, timestamp: nowTimestamp() }, kp)
       const hash = await this.rpc.sendRawTransaction(body)
-      this.pendingNonce[address] = nonce
+      this.pendingNonce[address] = next
       return { hash, contractAddress: to }
     }
-    const run = () => attempt(false).catch(e => isNonceError(e) ? attempt(true) : Promise.reject(e))
+    const run = () => attempt(0)
+      .catch(e => isNonceError(e) ? attempt(1) : Promise.reject(e))
+      .catch(e => isNonceError(e) ? attempt(2) : Promise.reject(e))
     const p = this.signingQueue.then(run, run)
     this.signingQueue = p.then(() => {}, () => {})
     return p
@@ -303,13 +370,27 @@ export class WalletService {
         const out: { symbol: string; balance: string; native: boolean; address: string }[] =
           [{ symbol: 'OCT', balance: acct?.balance ?? '0', native: true, address: '' }]
         await Promise.all(list.map(async t => {
-          const raw = await this.rpc.view<string>(t.address, 'balance_of', [msg.address]).catch(() => '0')
-          out.push({ symbol: t.symbol, balance: (Number(raw) / 1e6).toString(), native: false, address: t.address })
+          let pub = await this.rpc.view<string>(t.address, 'balance_of', [msg.address]).catch(() => '0')
+          // confidential-token (shield/unshield) detection: has_private is a valid method that returns
+          // 0/1. If present, the token supports a shielded balance; when the user has one, fetch the
+          // ciphertext so the popup can decrypt + show public and shielded on the SAME row.
+          let confidential = false, privCipher = ''
+          const hp = await this.rpc.view<string>(t.address, 'has_private', [msg.address]).catch(() => null)
+          if (hp === '0' || hp === '1') {
+            confidential = true
+            // these tokens keep the public balance under pub_balances:<addr>; their balance_of view
+            // returns 0, so read the storage key directly (matches the confidential-pool frontend).
+            pub = await this.rpc.contractStorage(t.address, 'pub_balances:' + msg.address).catch(() => pub)
+            if (hp === '1') privCipher = await this.rpc.view<string>(t.address, 'private_balance_of', [msg.address]).catch(() => '')
+          }
+          out.push({ symbol: t.symbol, balance: (Number(pub) / 1e6).toString(), native: false, address: t.address, confidential, privCipher })
         }))
         return out
       }
 
       case 'lpPositions': {
+        // The indexer returns only the CURRENT factory's positions (it filters out pools from older
+        // factory deploys), so the client doesn't need to enumerate the factory itself.
         const base = (await chrome.storage.local.get('fw_indexer'))['fw_indexer'] as string || DEFAULT_INDEXER
         let saved: any[] = []
         try { const r = await fetch(`${base}?wallet=${msg.address}`); if (r.ok) saved = await r.json() } catch { return [] }
@@ -379,13 +460,138 @@ export class WalletService {
       }
 
       case 'octPrice': {
-        const j = await fetchJson('https://api.coingecko.com/api/v3/simple/price?ids=octra&vs_currencies=usd&include_24hr_change=true')
+        const j = await fetchJson('https://api.coingecko.com/api/v3/simple/price?ids=octra&vs_currencies=usd&include_24hr_change=true&include_market_cap=true&include_24hr_vol=true')
         if (j?.octra) {
-          const out = { usd: j.octra.usd ?? 0, change24h: j.octra.usd_24h_change ?? 0 }
+          const out = { usd: j.octra.usd ?? 0, change24h: j.octra.usd_24h_change ?? 0, mcap: j.octra.usd_market_cap ?? 0, vol: j.octra.usd_24h_vol ?? 0 }
           await chrome.storage.local.set({ fw_price: out })
           return out
         }
-        return (await chrome.storage.local.get('fw_price')).fw_price ?? { usd: 0, change24h: 0 }
+        return (await chrome.storage.local.get('fw_price')).fw_price ?? { usd: 0, change24h: 0, mcap: 0, vol: 0 }
+      }
+
+      // Contract-call/multi_exec receipt status. { success: null } = not mined yet (poll again).
+      case 'txReceipt': {
+        const r = await this.rpc.receipt(msg.hash).catch(() => null) as { success?: boolean; error?: string | null } | null
+        if (!r || typeof r.success !== 'boolean') return { success: null }
+        return { success: r.success, error: r.error ?? null }
+      }
+
+      case 'tokenSupply': {
+        const token = (msg.token as string).trim()
+        if (!token) return ''
+        const v = await this.rpc.view<string>(token, 'total_supply', []).catch(() => '')
+        return v == null ? '' : String(v)
+      }
+
+      // Quote an exact-input swap via the Factory quoter. 'OCT' = native (mapped to WOCT for pools).
+      case 'swapQuote': {
+        const cfg = await chrome.storage.local.get(['fw_factory', 'fw_woct', 'fw_router', 'fw_quoter'])
+        const factory = (cfg.fw_factory as string) || FACTORY_ADDR
+        const woct = (cfg.fw_woct as string) || WOCT_ADDR
+        const router = (cfg.fw_router as string) || ROUTER_ADDR
+        const quoter = (cfg.fw_quoter as string) || QUOTER_ADDR
+        const inAddr = msg.tokenIn === 'OCT' ? woct : msg.tokenIn
+        const outAddr = msg.tokenOut === 'OCT' ? woct : msg.tokenOut
+        if (inAddr === outAddr) throw new Error('same token')
+        const amountIn = String(msg.amountInMicro)
+        if (!(Number(amountIn) > 0)) return { found: false }
+        const pool = bestPoolForPair(await fetchPools(this.rpc, factory), inAddr, outAddr, router)
+        if (!pool) return { found: false }
+        const q = await this.rpc.viewTuple(quoter, 'quote_exact_input_single', [inAddr, outAddr, String(pool.fee), amountIn, '0']).catch(() => [] as string[])
+        if (!q.length || !(Number(q[0]) > 0)) return { found: false }
+        return { found: true, amountOutMicro: q[0], fee: pool.fee, pool: pool.address, priceImpactBps: Number(q[2]) || 0 }
+      }
+
+      // Execute an exact-input swap as ONE atomic multi_exec (approve + swap can't be stranded):
+      // (wrap native →) grant the spender → router.exact_input_single (or swaphelper.swap_to_native
+      // for native out). Same batch the Factory web app submits. Returns the multi_exec tx hash.
+      case 'swap': {
+        const kp = this.requireUnlocked().keypair(msg.address)
+        const cfg = await chrome.storage.local.get(['fw_woct', 'fw_router', 'fw_swaphelper'])
+        const woct = (cfg.fw_woct as string) || WOCT_ADDR
+        const router = (cfg.fw_router as string) || ROUTER_ADDR
+        const swaphelper = (cfg.fw_swaphelper as string) || SWAPHELPER_ADDR
+        const nativeIn = msg.tokenIn === 'OCT', nativeOut = msg.tokenOut === 'OCT'
+        const inAddr = requireAddress(nativeIn ? woct : msg.tokenIn)
+        const outAddr = requireAddress(nativeOut ? woct : msg.tokenOut)
+        if (inAddr === outAddr) throw new Error('same token')
+        const fee = Number(msg.fee)
+        if (!(fee > 0)) throw new Error('invalid fee tier')
+        const amountIn = String(msg.amountInMicro), minOut = String(msg.minOutMicro)
+        if (!(Number(amountIn) > 0)) throw new Error('invalid amount')
+        const deadline = Math.floor(Date.now() / 1000) + 300
+        const recRaw = await this.rpc.call<{ recommended?: string; base_fee?: string }>('octra_recommendedFee', ['contract_call']).catch(() => null)
+        const ou = String(Math.max(Number(recRaw?.recommended ?? recRaw?.base_fee ?? 0) || 0, 5000))
+        const calls: MultiCall[] = []
+        if (nativeIn) calls.push({ to: woct, method: 'deposit', params: [], value: BigInt(amountIn) })
+        if (nativeOut) {
+          calls.push({ to: inAddr, method: 'grant', params: [swaphelper, amountIn] })
+          calls.push({ to: swaphelper, method: 'swap_to_native', params: [inAddr, fee, msg.address, deadline, amountIn, minOut] })
+        } else {
+          calls.push({ to: inAddr, method: 'grant', params: [router, amountIn] })
+          calls.push({ to: router, method: 'exact_input_single', params: [inAddr, outAddr, fee, msg.address, deadline, amountIn, minOut, '0'] })
+        }
+        const res = await this.signTx(msg.address, (nonce) =>
+          buildSignedMultiExec({ from: msg.address, nonce, timestamp: nowTimestamp(), ou, calls }, kp))
+        // Nudge the Factory swap indexer to scan this wallet so the swap shows in the web app history
+        // (a multi_exec tx has to_="multi_exec", only findable via the sender's address).
+        const idx = (await chrome.storage.local.get('fw_indexer'))['fw_indexer'] as string || DEFAULT_INDEXER
+        fetch(`${idx}/sync?wallet=${encodeURIComponent(msg.address)}`).catch(() => { /* best-effort */ })
+        return res
+      }
+
+      case 'prices': {
+        // OCT value of 1 unit of each token that has a WOCT pool (deepest valid pool wins).
+        const cfg = await chrome.storage.local.get(['fw_factory', 'fw_woct', 'fw_router'])
+        const factory = (cfg.fw_factory as string) || FACTORY_ADDR
+        const woct = (cfg.fw_woct as string) || WOCT_ADDR
+        const router = (cfg.fw_router as string) || ROUTER_ADDR
+        const pools = await fetchPools(this.rpc, factory)
+        const best: Record<string, PoolMeta> = {}
+        for (const p of pools) {
+          const tok = p.token0 === woct ? p.token1 : p.token1 === woct ? p.token0 : null
+          if (!tok || p.liquidity <= 0) continue
+          if (router && p.router && p.router !== router) continue
+          if (!best[tok] || p.liquidity > best[tok].liquidity) best[tok] = p
+        }
+        const out: Record<string, number> = {}
+        for (const tok of Object.keys(best)) { const v = tokenOctPrice(best[tok], woct); if (v > 0) out[tok] = v }
+        return out
+      }
+
+      case 'priceSeries': {
+        const token = msg.token as string
+        if (!token) return []
+        const cfg = await chrome.storage.local.get(['fw_factory', 'fw_woct', 'fw_router', 'fw_indexer'])
+        const factory = (cfg.fw_factory as string) || FACTORY_ADDR
+        const woct = (cfg.fw_woct as string) || WOCT_ADDR
+        const router = (cfg.fw_router as string) || ROUTER_ADDR
+        const indexer = (cfg.fw_indexer as string) || DEFAULT_INDEXER
+        const pools = await fetchPools(this.rpc, factory)
+        const cands = pools.filter(p => {
+          const tok = p.token0 === woct ? p.token1 : p.token1 === woct ? p.token0 : null
+          if (tok !== token) return false
+          if (router && p.router && p.router !== router) return false
+          return true
+        })
+        if (!cands.length) return []
+        let bestRows: { sqrtPrice: string }[] = [], bestPool: PoolMeta | null = null
+        for (const p of cands) {
+          let rows: { sqrtPrice: string }[] = []
+          try { const r = await fetch(`${indexer}?priceseries=1&pool=${p.address}`); if (r.ok) rows = await r.json() } catch { /* */ }
+          if (Array.isArray(rows) && rows.length > bestRows.length) { bestRows = rows; bestPool = p }
+        }
+        if (!bestPool) return []
+        const t0IsWoct = bestPool.token0 === woct
+        const series: number[] = []
+        for (const row of bestRows) {
+          const s = BigInt(row.sqrtPrice || '0')
+          if (s === 0n) continue
+          const price = Number((s * s * (10n ** 6n)) / (Q96 * Q96)) / 1e6
+          if (!(price > 0) || price < 1e-15 || price > 1e15) continue
+          series.push(t0IsWoct ? 1 / price : price)
+        }
+        return series
       }
 
       case 'octChart': {
@@ -482,7 +688,16 @@ export class WalletService {
         const kp = this.requireUnlocked().keypair(msg.address)
         for (const c of msg.calls) requireAddress(c.to)
         return this.signTx(msg.address, (nonce) =>
-          buildSignedMultiExec({ from: msg.address, nonce, timestamp: nowTimestamp(), calls: msg.calls }, kp))
+          buildSignedMultiExec({ from: msg.address, nonce, timestamp: nowTimestamp(), ou: msg.ou, calls: msg.calls }, kp))
+      }
+
+      // Sign an arbitrary message (dapp auth / login / nft-gated content). Raw ed25519
+      // over the UTF-8 bytes, returned base64 — matches what an on-chain pubkey verifies
+      // (the standard Octra signMessage; e.g. Xpectrum's key-server checks exactly this).
+      case 'signMessage': {
+        const kp = this.requireUnlocked().keypair(msg.address)
+        const sig = sign(new TextEncoder().encode(String(msg.message)), kp.privateKey)
+        return bytesToBase64(sig)
       }
 
       // shield (encrypt) / unshield (decrypt) — the pvac payload is built in the popup and

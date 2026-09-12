@@ -2,12 +2,13 @@ import React, { useState, type CSSProperties } from 'react'
 import { api, type AccountView } from './api'
 import { useT } from './i18n'
 import { toMicro } from '../core/tx'
+import { proveValues, decryptCipher, depositProofs, stealthSend, stealthScan, stealthViewPub } from './pvac'
 
 const F = 'Tahoma, Arial, sans-serif'
 const M = '"SF Mono", Consolas, Monaco, monospace'
 const ink = '#2c3e57', muted = '#7a8fa8', accent = '#3b567f', border = '#c8d0db'
 
-export interface ApprovalReq { id: string; kind: 'connect' | 'tx'; origin: string; data: any }
+export interface ApprovalReq { id: string; kind: 'connect' | 'tx' | 'sign' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'; origin: string; data: any }
 const short = (a: string) => a ? a.slice(0, 8) + '…' + a.slice(-4) : ''
 
 // Rendered inside the main popup so the approval shares the wallet's window and styling. For a
@@ -21,15 +22,36 @@ export function ApprovalView({ req, accounts, selDefault, onDone }: {
 
   const decide = async (approved: boolean) => {
     setBusy(true)
-    try { await api.approvalResolve(req.id, approved, accounts[pick]?.address) }
-    catch { /* */ }
+    try {
+      if (req.kind === 'fheprove' || req.kind === 'fhedecrypt' || req.kind === 'fhedeposit' || req.kind === 'stealthsend' || req.kind === 'stealthscan' || req.kind === 'stealthviewpub') {
+        // Run the FHE/stealth op in the popup (pvac wasm + stealth crypto live here) with the connected
+        // account's key, then hand ONLY the result back. The seed/key never leaves the wallet.
+        if (!approved) { await api.fheProveResolve(req.id, false); onDone(); return }
+        const result = req.kind === 'fheprove'
+          ? await proveValues(req.data.address, req.data.values, req.data.blindings)
+          : req.kind === 'fhedecrypt'
+            ? await decryptCipher(req.data.address, req.data.cipher)
+            : req.kind === 'fhedeposit'
+              ? await depositProofs(req.data.address, req.data.items, req.data.amtBlindings)
+              : req.kind === 'stealthsend'
+                ? await stealthSend(req.data.address, req.data.recipientPub, req.data.tokenCipher, req.data.amount)
+                : req.kind === 'stealthscan'
+                  ? await stealthScan(req.data.address, req.data.notes)
+                  : await stealthViewPub(req.data.address)
+        await api.fheProveResolve(req.id, true, result)
+      } else {
+        await api.approvalResolve(req.id, approved, accounts[pick]?.address)
+      }
+    } catch {
+      try { if (req.kind === 'fheprove' || req.kind === 'fhedecrypt' || req.kind === 'fhedeposit') await api.fheProveResolve(req.id, false) } catch { /* */ }
+    }
     onDone()
   }
 
   return (
     <div style={{ padding: 20, minHeight: 600, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontFamily: F, fontSize: 12, color: muted, textTransform: 'uppercase', letterSpacing: '1px' }}>
-        {req.kind === 'connect' ? t('connection_request') : t('signature_request')}
+        {req.kind === 'connect' ? t('connection_request') : req.kind === 'fheprove' ? 'private proof request' : req.kind === 'fhedecrypt' ? 'reveal private balance' : req.kind === 'fhedeposit' ? 'confidential deposit' : t('signature_request')}
       </div>
       <SafeOrigin origin={req.origin} />
 
@@ -48,11 +70,11 @@ export function ApprovalView({ req, accounts, selDefault, onDone }: {
             </div>
           )}
         </Block>
-      ) : <TxSummary d={req.data} />}
+      ) : req.kind === 'sign' ? <SignSummary d={req.data} /> : req.kind === 'fheprove' ? <FheProveSummary d={req.data} /> : req.kind === 'fhedecrypt' ? <FheDecryptSummary /> : req.kind === 'fhedeposit' ? <FheDepositSummary d={req.data} /> : <TxSummary d={req.data} />}
 
       <div style={{ display: 'flex', gap: 10, marginTop: 'auto' }}>
         <button disabled={busy} onClick={() => decide(false)} style={{ ...b, background: 'transparent', color: accent, border: `1px solid ${border}` }}>{t('reject')}</button>
-        <button disabled={busy} onClick={() => decide(true)} style={{ ...b }}>{busy ? '…' : req.kind === 'connect' ? t('connect') : t('approve')}</button>
+        <button disabled={busy} onClick={() => decide(true)} style={{ ...b }}>{busy ? '…' : req.kind === 'connect' ? t('connect') : req.kind === 'fhedecrypt' ? 'reveal' : req.kind === 'fhedeposit' ? 'deposit' : t('approve')}</button>
       </div>
     </div>
   )
@@ -72,7 +94,7 @@ const octInputToMicro = (oct: unknown): bigint => { try { return toMicro(oct as 
 function feeMicro(d: any): bigint {
   if (d.kind === 'transfer') return Number(d.oct) < 1000 ? 1n : 3n
   if (d.kind === 'call') return 10_000n
-  if (d.kind === 'multiExec') return 5_000n
+  if (d.kind === 'multiExec') { try { return d.ou ? BigInt(d.ou) : 5_000n } catch { return 5_000n } }
   if (d.kind === 'deploy') return 200_000n
   return 0n
 }
@@ -98,6 +120,78 @@ function Disclosure({ open, toggle }: { open: boolean; toggle: () => void }) {
     <button onClick={toggle} style={{ marginTop: 10, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', fontFamily: F, fontSize: 12, color: accent }}>
       {open ? 'hide details' : 'show details'}
     </button>
+  )
+}
+
+// Message-signing request (dapp auth / nft-gated content). Shows the exact message and
+// makes clear it is NOT a transaction: no funds move, no network fee.
+function SignSummary({ d }: { d: any }) {
+  return (
+    <Block>
+      <div style={{ fontFamily: F, fontSize: 12, color: muted, marginBottom: 6 }}>message to sign</div>
+      <div style={{ fontFamily: M, fontSize: 12, color: ink, wordBreak: 'break-all', whiteSpace: 'pre-wrap', maxHeight: 220, overflowY: 'auto', background: '#f4f6f9', border: `1px solid ${border}`, padding: 10 }}>
+        {String(d.message ?? '')}
+      </div>
+      <p style={{ fontFamily: F, fontSize: 12, color: muted, lineHeight: 1.5, margin: '10px 0 0' }}>
+        signing proves you control this account. it does not move funds and costs no fee.
+      </p>
+    </Block>
+  )
+}
+
+// Confidential-AMM proof request: the site asks the wallet to build a bound proof for these
+// amounts with this account's FHE key. The amounts stay in the wallet; only the proof (which
+// reveals nothing about them or the key) is returned. No funds move and no fee is charged here.
+function FheProveSummary({ d }: { d: any }) {
+  const vals: string[] = Array.isArray(d.values) ? d.values : []
+  return (
+    <Block>
+      <div style={{ fontFamily: F, fontSize: 12, color: muted, marginBottom: 6 }}>build a private proof for</div>
+      <div style={{ fontFamily: M, fontSize: 13, color: ink, background: '#f4f6f9', border: `1px solid ${border}`, padding: 10, maxHeight: 180, overflowY: 'auto' }}>
+        {vals.map((v, i) => <div key={i}>{v}</div>)}
+      </div>
+      <p style={{ fontFamily: F, fontSize: 12, color: muted, lineHeight: 1.5, margin: '10px 0 0' }}>
+        the proof is built inside the wallet with your key. your key never leaves the wallet and the
+        amounts are not revealed on-chain. no funds move and there is no fee for this.
+      </p>
+    </Block>
+  )
+}
+
+// Reveal-private-balance request: the site asks the wallet to decrypt one of this account's own
+// confidential ciphertexts (e.g. a shielded token balance) so the owner can see the amount. The
+// cipher is decrypted with this account's key inside the wallet; only the resulting number goes
+// back to the page. No funds move and no fee is charged.
+function FheDecryptSummary() {
+  return (
+    <Block>
+      <div style={{ fontFamily: F, fontSize: 12, color: muted, marginBottom: 6 }}>reveal your private balance</div>
+      <p style={{ fontFamily: F, fontSize: 12, color: muted, lineHeight: 1.5, margin: 0 }}>
+        this decrypts one of your own confidential amounts with your key, inside the wallet, so only
+        you see it. your key never leaves the wallet. no funds move and there is no fee for this.
+      </p>
+    </Block>
+  )
+}
+
+// Confidential-deposit request: the site asks the wallet to spend hidden amounts out of this
+// account's shielded token balances into a private pool. The wallet builds the ciphertext + a
+// solvency proof (balance stays >= 0) with this account's key; only those are returned. The amounts
+// are never revealed on-chain and no amount is shown to the site.
+function FheDepositSummary({ d }: { d: any }) {
+  const items: any[] = Array.isArray(d.items) ? d.items : []
+  return (
+    <Block>
+      <div style={{ fontFamily: F, fontSize: 12, color: muted, marginBottom: 6 }}>deposit into a private pool</div>
+      <div style={{ fontFamily: M, fontSize: 13, color: ink, background: '#f4f6f9', border: `1px solid ${border}`, padding: 10 }}>
+        {items.map((it, i) => <div key={i}>amount {i + 1}: {String(it.amount)}</div>)}
+      </div>
+      <p style={{ fontFamily: F, fontSize: 12, color: muted, lineHeight: 1.5, margin: '10px 0 0' }}>
+        this spends the shown amounts from your shielded balance and proves, with your key inside the
+        wallet, that your balance stays covered. the amounts are not revealed on-chain and your key
+        never leaves the wallet.
+      </p>
+    </Block>
   )
 }
 

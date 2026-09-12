@@ -40,14 +40,38 @@ export default defineUnlistedScript(() => {
     getBalance: (address: string) => request({ method: 'octra_getBalance', params: [address] }),
     // decrypted private (encrypted) balance for the connected account, from the wallet's cache
     privateBalance: () => request({ method: 'octra_privateBalance' }),
+    // Sign an arbitrary message (dapp auth / login / nft-gated content). Returns the
+    // ed25519 signature as base64 over the UTF-8 message; verify against the account's
+    // on-chain public key (octra_publicKey). Opens an approval popup.
+    signMessage: (message: string) => request({ method: 'octra_signMessage', params: [message] }),
     sendTransfer: (to: string, oct: number) => request({ method: 'octra_signAndSend', params: [{ kind: 'transfer', to, oct }] }),
     call: (contract: string, method: string, params: (string | number)[], valueOct?: number) =>
       request({ method: 'octra_signAndSend', params: [{ kind: 'call', contract, method, params, valueOct }] }),
-    multiExec: (calls: any[]) => request({ method: 'octra_signAndSend', params: [{ kind: 'multiExec', calls }] }),
+    multiExec: (calls: any[], ou?: string) => request({ method: 'octra_signAndSend', params: [{ kind: 'multiExec', calls, ou }] }),
     // Deploy a contract: sign+submit an op_type "deploy" tx in the extension. Returns
     // { hash, contractAddress }. bytecode = base64 (compile via RPC octra_compileAml first).
     deploy: (bytecode: string, params: (string | number)[], ou?: string) =>
       request({ method: 'octra_signAndSend', params: [{ kind: 'deploy', bytecode, params, ou }] }),
+    // Build confidential-AMM proofs for a list of non-negative integer amounts using the connected
+    // account's FHE key. Opens an approval popup; returns [{cipher, proof, commit}] as raw base64,
+    // ready to pass as contract-call params. The key never leaves the wallet — only proofs return.
+    fheProve: (values: (string | number)[], blindings?: string[]) => request({ method: 'octra_fheProve', params: [values.map(String), blindings] }),
+    // Decrypt one of the connected account's own confidential ciphertexts (e.g. a shielded token's
+    // private_balance_of) so the owner can see the amount. Opens an approval popup; returns the
+    // plaintext integer as a string. The key never leaves the wallet — only the number returns.
+    fheDecrypt: (cipher: string) => request({ method: 'octra_fheDecrypt', params: [cipher] }),
+    // Build confidential-deposit proofs: spend hidden amounts out of the connected account's shielded
+    // token balances into a private pool. items = [{cipher: private_balance_of, amount: dx}]. Opens an
+    // approval popup; returns [{cipher, amtProof, amtCommit, remProof, remCommit}] as raw base64 ready
+    // to pass to the pool's add_liquidity. The key never leaves the wallet — only ciphertext + proofs.
+    fheDeposit: (items: { cipher: string; amount: string | number }[], amtBlindings?: string[]) =>
+      request({ method: 'octra_fheDeposit', params: [items.map(it => ({ cipher: it.cipher, amount: String(it.amount) })), amtBlindings] }),
+    // Stealth (private-transfer) helpers for the confidential-stealth token.
+    stealthViewPub: () => request({ method: 'octra_stealthViewPub', params: [] }),
+    stealthSend: (recipientPub: string, tokenCipher: string, amount: string | number) =>
+      request({ method: 'octra_stealthSend', params: [recipientPub, tokenCipher, String(amount)] }),
+    stealthScan: (notes: { id: number; ephem: string; payload: string }[]) =>
+      request({ method: 'octra_stealthScan', params: [notes] }),
   }
 
   ;(window as any).octra = provider

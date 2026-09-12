@@ -50,6 +50,12 @@ export default defineBackground(() => {
       provider.resolveApproval(msg.id, msg.approved, msg.address).then(() => sendResponse({ ok: true }))
       return true
     }
+    // popup reports the decision for an fheprove request, carrying the proof it built (pvac wasm
+    // runs in the popup, not here); the key never reaches the background, only the finished proof.
+    if (msg && msg.__fheProveResult) {
+      provider.resolveFheProve(msg.id, msg.approved, msg.result).then(() => sendResponse({ ok: true }))
+      return true
+    }
     // popup heartbeat: lets the provider know a popup is alive (so it need not open a window)
     if (msg && msg.__popupOpen) { provider.ping(); sendResponse({ ok: true }); return false }
     armAutoLock()   // only extension-page activity re-arms the idle lock

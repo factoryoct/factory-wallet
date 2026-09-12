@@ -63,6 +63,16 @@ export class OctraRpc {
     return this.call<AccountInfo>('octra_account', [address])
   }
 
+  /** Confirmed AND pending nonce. `octra_account` only reports the confirmed one, so a second
+   * tx signed while the first is still queued reuses its nonce and the node rejects it with
+   * "duplicate nonce (fee rate bump < 10%)". `octra_balance` reports both. */
+  async nonces(address: string): Promise<{ nonce: number; pending: number }> {
+    const r = await this.call<{ nonce?: number; pending_nonce?: number }>('octra_balance', [address])
+    const nonce = Number(r?.nonce ?? 0)
+    const pending = Number(r?.pending_nonce ?? nonce)
+    return { nonce, pending: Math.max(nonce, pending) }
+  }
+
   /** Deterministic deployment address for (bytecode, deployer, nonce). The deploy tx's
    * to_ MUST equal this (it is signed), so the node accepts the bytecode that derives it.
    * nonce MUST be a number (a string yields nonce=0). Confirmed against a live deploy. */
@@ -71,6 +81,13 @@ export class OctraRpc {
     const addr = typeof r === 'string' ? r : r?.address
     if (!addr) throw new Error('computeContractAddress: no address')
     return addr
+  }
+
+  /** Raw single storage key of a contract (some tokens keep the public balance under
+   * `pub_balances:<addr>` and their balance_of view is unreliable). Returns '0' if unset. */
+  async contractStorage(addr: string, key: string): Promise<string> {
+    const r = await this.call<{ value?: string } | string>('octra_contractStorage', [addr, key])
+    return (typeof r === 'string' ? r : r?.value) ?? '0'
   }
 
   /** Read-only contract view. Unwraps the { result, storage } envelope when present. */

@@ -4,18 +4,59 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>factory wallet</title>
+    <script src="/theme-init.js"></script>
     <style>
+      /* Theme palette. JS color constants in App.tsx point at these vars, so toggling
+         <html data-theme="dark"> restyles the whole wallet. */
+      :root {
+        --ink: #2c3e57; --muted: #7a8fa8; --accent: #3b567f; --border: #c8d0db;
+        --bg: #eef1f5; --card: #ffffff; --cell-border: #dfe4ea; --on-accent: #ffffff;
+        --grad: linear-gradient(125deg, #2c456f, #3c5a92, #5577b3, #3a5688, #2a4268, #486aa0);
+      }
+      html[data-theme="dark"] {
+        --ink: #fffffe; --muted: #9a9a9a; --accent: #b5cff8; --border: #3a3a3a;
+        --bg: #141414; --card: #242424; --cell-border: #3a3a3a; --on-accent: #16181c;
+        --grad: linear-gradient(125deg, #28395d 0%, #364f80 22%, #4d6a9e 42%, #38547f 55%, #283f63 78%, #415d8c 100%);
+      }
+      /* Fixed popup size; #root scrolls internally so tall screens don't clip. */
       html, body { margin: 0; padding: 0; }
-      body { width: 400px; min-height: 600px; background: #eef1f5; font-family: Tahoma, Arial, sans-serif; }
+      body { width: 380px; height: 600px; overflow: hidden; background: var(--bg); font-family: Tahoma, Arial, sans-serif; -webkit-tap-highlight-color: transparent; }
+      #root { width: 380px; height: 600px; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
       * { box-sizing: border-box; }
       ::-webkit-scrollbar { width: 0; height: 0; }
       * { scrollbar-width: none; }
       @keyframes fw-spin { to { transform: rotate(360deg); } }
       @keyframes fw-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+      @keyframes fw-fade-in { from { opacity: 0; } to { opacity: 1; } }
+      .fw-splash-base { color: #0D0D0D; }
+      html[data-theme="dark"] .fw-splash-base { color: #5b6b80; }
+      @keyframes fw-slideup { from { transform: translate3d(0, 100%, 0); } to { transform: translate3d(0, 0, 0); } }
       .fw-spin { animation: fw-spin .8s linear infinite; transform-origin: 50% 50%; }
       .fw-fade { animation: fw-fade .18s ease-out; }
-      button { transition: background-color .15s ease, opacity .15s ease, color .15s ease, border-color .15s ease; }
-      input, select, textarea { transition: border-color .15s ease; }
+      @keyframes fw-pop { 0% { transform: scale(.4); opacity: 0; } 60% { transform: scale(1.12); } 100% { transform: scale(1); opacity: 1; } }
+      .fw-pop { animation: fw-pop .34s cubic-bezier(.34,1.56,.64,1); }
+      .fw-slideup { animation: fw-slideup .24s cubic-bezier(.22,.61,.36,1); will-change: transform; backface-visibility: hidden; }
+      @keyframes fw-shine { 0% { background-position: 100% 0; } 100% { background-position: -50% 0; } }
+      .fw-shine { background: linear-gradient(105deg, #0D0D0D 0%, #0D0D0D 40%, #8ba0bb 50%, #0D0D0D 60%, #0D0D0D 100%); background-size: 300% 100%; background-position: 100% 0; -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; animation: fw-shine 2.4s linear infinite; will-change: background-position; }
+      html[data-theme="dark"] .fw-shine { background: linear-gradient(105deg, #5b6b80 0%, #5b6b80 40%, #e7edf6 50%, #5b6b80 60%, #5b6b80 100%); background-size: 300% 100%; -webkit-background-clip: text; background-clip: text; }
+      @keyframes fw-bal-r { from { transform: translateX(22px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+      @keyframes fw-bal-l { from { transform: translateX(-22px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+      .fw-bal-r { animation: fw-bal-r .22s cubic-bezier(.22,.61,.36,1); }
+      .fw-bal-l { animation: fw-bal-l .22s cubic-bezier(.22,.61,.36,1); }
+      button { transition: opacity .15s ease; }
+      .fw-actiongrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; background: transparent; padding: 0 12px 8px; }
+      /* short popup: action cells are compact rows, not big squares, so the asset list stays visible. */
+      .fw-actioncell { position: relative; height: 62px; background: var(--card); border: none; border-radius: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; }
+      /* ===== Rounded RECTANGLES (not pills): moderate radius everywhere. ===== */
+      button:not(.fw-actioncell) { border-radius: 12px !important; }
+      .fw-actioncell { border-radius: 16px !important; }
+      input, select, textarea { border-radius: 12px !important; }
+      div[style*="border:"] { border-radius: 14px !important; }
+      [style*="border:1px"], [style*="border: 1px"] { border-radius: 14px !important; }
+      button.fw-tokchip { border-radius: 12px !important; }
+      /* ===== END ===== */
+      input[type="range"] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 2px; background: var(--cell-border); outline: none; }
+      input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; border: none; }
     </style>
   </head>
   <body>

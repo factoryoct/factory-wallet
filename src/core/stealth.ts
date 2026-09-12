@@ -155,3 +155,21 @@ export function findMyOutputs(
   if (res.length > 0) return res
   try { return tryKey(deriveViewPriv(myViewPrivB64)) } catch { return [] }
 }
+
+/** Tag-less scan for the confidential-stealth token: try ECDH(viewPriv, note.ephem) -> enc_key and
+ * decrypt each note's payload. A note is ours iff its memo decrypts. Returns the decrypted memos. */
+export function scanNotes(notes: Array<{ id: number; ephem: string; payload: string }>, viewPrivB64: string): Array<{ id: number; memo: any }> {
+  const priv = b64ToBytes(viewPrivB64)
+  const out: Array<{ id: number; memo: any }> = []
+  for (const n of notes) {
+    try {
+      if (!n.ephem || !n.payload) continue
+      const shared = x25519.getSharedSecret(priv, b64ToBytes(n.ephem))
+      const encKey = sha256(concat(label('enc'), shared))
+      const raw = b64ToBytes(n.payload)
+      const memo = JSON.parse(new TextDecoder().decode(gcm(encKey, raw.slice(0, 12)).decrypt(raw.slice(12))))
+      out.push({ id: n.id, memo })
+    } catch { /* not ours / undecryptable */ }
+  }
+  return out
+}

@@ -9,7 +9,7 @@ const PERM_KEY = 'fw_permissions'
 
 interface Pending {
   sendResponse: (r: { ok: boolean; res?: unknown; error?: string }) => void
-  kind: 'connect' | 'tx'
+  kind: 'connect' | 'tx' | 'sign' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'
   origin: string
   data: any
 }
@@ -97,6 +97,16 @@ export class ProviderController {
           // pending request is shown right after, so connecting is one flow with no error.
           return this.open(origin, 'connect', {}, sendResponse)
         }
+        case 'octra_signMessage': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          const message = msg.params?.[0]
+          if (typeof message !== 'string' || message.length === 0) return sendResponse({ ok: false, error: 'message must be a non-empty string' })
+          if (message.length > 4096) return sendResponse({ ok: false, error: 'message too long' })
+          // Gate behind an approval popup: signing proves account control and could be
+          // phished, so the user must see the message and consent (like personal_sign).
+          return this.open(origin, 'sign', { message, address: addr }, sendResponse)
+        }
         case 'octra_signAndSend': {
           const addr = this.perms[origin]
           if (!addr) return sendResponse({ ok: false, error: 'not connected' })
@@ -106,6 +116,67 @@ export class ProviderController {
           // password. So clicking swap/add-liquidity/collect on a locked wallet prompts for
           // the password instead of erroring with "wallet locked".
           return this.open(origin, 'tx', { ...msg.params[0], address: addr }, sendResponse)
+        }
+        case 'octra_fheProve': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          const values = msg.params?.[0]
+          if (!Array.isArray(values) || values.length === 0 || values.length > 8) return sendResponse({ ok: false, error: 'fheProve: expected an array of 1..8 values' })
+          for (const v of values) { if (!/^\d{1,20}$/.test(String(v))) return sendResponse({ ok: false, error: 'fheProve: values must be non-negative integers' }) }
+          // optional explicit blindings (base64, one per value) so a sender can reuse the same blinding
+          // a recipient needs to claim a stealth note. Omitted -> random blinding (normal proofs).
+          const blindings = Array.isArray(msg.params?.[1]) ? msg.params[1].map(String) : undefined
+          // Gate behind an approval popup: proving uses the account's FHE key, so the user must
+          // consent and see the amounts (like signMessage). The key never leaves the wallet — the
+          // popup builds the proof and only the ciphertext + proof (which reveal nothing) return.
+          return this.open(origin, 'fheprove', { address: addr, values: values.map(String), blindings }, sendResponse)
+        }
+        case 'octra_fheDecrypt': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          const cipher = msg.params?.[0]
+          if (typeof cipher !== 'string' || cipher.length === 0 || cipher.length > 8_000_000) return sendResponse({ ok: false, error: 'fheDecrypt: expected a ciphertext string' })
+          // Gate behind an approval popup: decrypting reveals the account's own private amount and
+          // uses its FHE key, so the user must consent (like signMessage). The key never leaves the
+          // wallet — the popup decrypts and only the resulting number is returned to the page. A
+          // cipher not under this account's key decrypts to garbage, so nothing else can leak.
+          return this.open(origin, 'fhedecrypt', { address: addr, cipher }, sendResponse)
+        }
+        case 'octra_fheDeposit': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          const items = msg.params?.[0]
+          if (!Array.isArray(items) || items.length === 0 || items.length > 4) return sendResponse({ ok: false, error: 'fheDeposit: expected 1..4 items' })
+          for (const it of items) {
+            if (!it || typeof it.cipher !== 'string' || it.cipher.length === 0 || it.cipher.length > 8_000_000) return sendResponse({ ok: false, error: 'fheDeposit: each item needs a balance cipher' })
+            if (!/^\d{1,20}$/.test(String(it.amount))) return sendResponse({ ok: false, error: 'fheDeposit: amount must be a non-negative integer' })
+          }
+          // Gate behind an approval popup: this spends the account's shielded balance and uses its
+          // FHE key, so the user must consent. The key never leaves the wallet — the popup builds
+          // the ciphertext + solvency proofs and only those (which reveal no amount) are returned.
+          const amtBlindings = Array.isArray(msg.params?.[1]) ? msg.params[1].map(String) : undefined
+          return this.open(origin, 'fhedeposit', { address: addr, items: items.map((it: any) => ({ cipher: it.cipher, amount: String(it.amount) })), amtBlindings }, sendResponse)
+        }
+        case 'octra_stealthViewPub': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          return this.open(origin, 'stealthviewpub', { address: addr }, sendResponse)
+        }
+        case 'octra_stealthSend': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          const recipientPub = msg.params?.[0], tokenCipher = msg.params?.[1], amount = msg.params?.[2]
+          if (typeof recipientPub !== 'string' || !recipientPub) return sendResponse({ ok: false, error: 'stealthSend: missing recipient public key' })
+          if (typeof tokenCipher !== 'string' || !tokenCipher) return sendResponse({ ok: false, error: 'stealthSend: missing token cipher' })
+          if (!/^\d{1,20}$/.test(String(amount))) return sendResponse({ ok: false, error: 'stealthSend: bad amount' })
+          return this.open(origin, 'stealthsend', { address: addr, recipientPub, tokenCipher, amount: String(amount) }, sendResponse)
+        }
+        case 'octra_stealthScan': {
+          const addr = this.perms[origin]
+          if (!addr) return sendResponse({ ok: false, error: 'not connected' })
+          const notes = msg.params?.[0]
+          if (!Array.isArray(notes)) return sendResponse({ ok: false, error: 'stealthScan: expected an array of notes' })
+          return this.open(origin, 'stealthscan', { address: addr, notes }, sendResponse)
         }
         default:
           return sendResponse({ ok: false, error: 'unsupported method: ' + msg.method })
@@ -200,10 +271,14 @@ export class ProviderController {
         await this.persist()
         return p.sendResponse({ ok: true, res: [addr] })
       }
+      if (p.kind === 'sign') {
+        return p.sendResponse({ ok: true, res: await this.wallet.handle({ type: 'signMessage', address: p.data.address, message: p.data.message } as any) })
+      }
+      if (p.kind === 'fheprove' || p.kind === 'fhedecrypt' || p.kind === 'fhedeposit' || p.kind === 'stealthsend' || p.kind === 'stealthscan' || p.kind === 'stealthviewpub') return p.sendResponse({ ok: false, error: 'resolves via resolveFheProve' })
       const d = p.data
       const m = d.kind === 'transfer' ? { type: 'send', address: d.address, to: d.to, oct: d.oct }
         : d.kind === 'call' ? { type: 'call', address: d.address, contract: d.contract, method: d.method, params: d.params, valueOct: d.valueOct }
-        : d.kind === 'multiExec' ? { type: 'multiExec', address: d.address, calls: d.calls }
+        : d.kind === 'multiExec' ? { type: 'multiExec', address: d.address, calls: d.calls, ou: d.ou }
         : d.kind === 'deploy' ? { type: 'deploy', address: d.address, bytecode: d.bytecode, params: d.params, ou: d.ou }
         : null
       if (!m) throw new Error('unknown tx kind')
@@ -211,5 +286,21 @@ export class ProviderController {
     } catch (e) {
       p.sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) })
     }
+  }
+
+  /** Resolve an fheprove approval. The popup builds the proof (pvac wasm lives there) and passes
+   * the finished result here; the seed/key never touches the background or the site — only the
+   * proof (which reveals nothing about the value or key) is sent back to the requesting page. */
+  async resolveFheProve(id: string, approved: boolean, result?: any) {
+    const p = this.pending.get(id)
+    if (!p || (p.kind !== 'fheprove' && p.kind !== 'fhedecrypt' && p.kind !== 'fhedeposit' && p.kind !== 'stealthsend' && p.kind !== 'stealthscan' && p.kind !== 'stealthviewpub')) return
+    this.pending.delete(id)
+    this.updateBadge()
+    if (this.pending.size === 0 && this.approvalWindowId != null) {
+      const wid = this.approvalWindowId; this.approvalWindowId = null
+      chrome.windows.remove(wid).catch(() => { /* */ })
+    }
+    if (!approved || !result) return p.sendResponse({ ok: false, error: 'user rejected request' })
+    return p.sendResponse({ ok: true, res: result })
   }
 }
