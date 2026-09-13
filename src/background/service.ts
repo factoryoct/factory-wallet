@@ -218,14 +218,29 @@ export class WalletService {
     } catch { /* corrupt session -> stay locked */ }
   }
 
-  /** Serialize a signing op and assign a non-colliding nonce; on a nonce rejection, resync from
-   * the chain and resubmit once. */
+  /* Три попытки, и каждая — своя ДОГАДКА о верном номере, а не «то же плюс один».
+   *
+   * Старая лесенка прибавляла к найденному номеру 0, 1, 2 — и в самом частом
+   * случае промахивалась мимо верного трижды. Случай такой: сеть встала, наши
+   * отправки повисли и умерли по сроку. Цепь откатилась на 5517 и ждёт 5518, а
+   * мы помним 5519 от отброшенных. Лесенка давала 5520, 5519, 5520 — верного
+   * номера нет ни в одной. Человек получал «Invalid nonce» на первое же
+   * действие; работало только следующее.
+   *
+   * Теперь догадки разные по смыслу:
+   *   1. с оглядкой на свою память — обычный случай, две отправки подряд;
+   *   2. ТОЛЬКО по цепи — наши отправки отбросили, память врёт;
+   *   3. по цепи плюс один — цепь ещё не увидела соседнюю отправку.
+   */
   private async signTx(address: string, build: (nonce: number) => { body: Record<string, unknown> }): Promise<{ hash: string }> {
-    const attempt = async (bump: number) => {
-      // The node counts a queued tx too, so take the pending nonce, not just the confirmed one.
+    const attempt = async (догадка: 0 | 1 | 2) => {
+      // Узел считает и отправку в очереди, поэтому берём не только подтверждённый номер.
       const { nonce, pending } = await this.rpc.nonces(address)
-      if (bump > 0) this.pendingNonce[address] = 0          // resync: trust the chain again
-      const next = Math.max(nonce, pending, this.pendingNonce[address] ?? 0) + 1 + bump
+      const поЦепи = Math.max(nonce, pending)
+      if (догадка > 0) this.pendingNonce[address] = 0      // память врёт — верим цепи
+      const next = догадка === 0
+        ? Math.max(поЦепи, this.pendingNonce[address] ?? 0) + 1
+        : поЦепи + догадка
       const { body } = build(next)
       const hash = await this.rpc.sendRawTransaction(body)
       this.pendingNonce[address] = next
@@ -242,10 +257,14 @@ export class WalletService {
   /** Deploy variant of signTx: the contract address depends on the nonce, so it is computed
    * inside the serialized slot (after the nonce is fixed) and returned to the caller. */
   private async signDeploy(address: string, bytecode: string, params: (string | number)[], ou: string | undefined, kp: Keypair): Promise<{ hash: string; contractAddress: string }> {
-    const attempt = async (bump: number) => {
+    // Догадки те же, что в signTx: см. пояснение там.
+    const attempt = async (догадка: 0 | 1 | 2) => {
       const { nonce, pending } = await this.rpc.nonces(address)
-      if (bump > 0) this.pendingNonce[address] = 0
-      const next = Math.max(nonce, pending, this.pendingNonce[address] ?? 0) + 1 + bump
+      const поЦепи = Math.max(nonce, pending)
+      if (догадка > 0) this.pendingNonce[address] = 0
+      const next = догадка === 0
+        ? Math.max(поЦепи, this.pendingNonce[address] ?? 0) + 1
+        : поЦепи + догадка
       const to = await this.rpc.computeContractAddress(bytecode, address, next)
       const { body } = buildSignedDeploy({ from: address, to, bytecode, params, ou, nonce: next, timestamp: nowTimestamp() }, kp)
       const hash = await this.rpc.sendRawTransaction(body)
