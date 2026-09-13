@@ -20,7 +20,11 @@ export default defineUnlistedScript(() => {
   const request = (args: { method: string; params?: any[] }): Promise<any> => {
     const id = ++seq
     return new Promise((resolve, reject) => {
-      // time out a lost response instead of hanging the promise forever
+      /* Потерянный ответ не должен подвешивать обещание навсегда.
+         Три минуты. В самом кошельке срок ожидания решения СПЕЦИАЛЬНО чуть
+         короче (см. ЖДЁМ_РЕШЕНИЯ в src/background/provider.ts): иначе страница
+         сдаётся первой, а место у кошелька остаётся занятым, и следующая
+         попытка отвергается как «уже есть ожидающий запрос». */
       const timer = setTimeout(() => {
         if (pending.delete(id)) reject(new Error('octra: request timed out'))
       }, 180_000)
