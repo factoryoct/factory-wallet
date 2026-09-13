@@ -16,7 +16,12 @@ interface Pending {
   kind: 'connect' | 'tx' | 'sign' | 'privbal' | 'fheprove' | 'fhedecrypt' | 'fhedeposit' | 'stealthsend' | 'stealthscan' | 'stealthviewpub'
   origin: string
   data: any
+  таймер?: ReturnType<typeof setTimeout>
 }
+
+/* Сколько ждём решения человека, прежде чем ответить «не дождались».
+   Пять минут — с большим запасом на подумать, и всё же не вечность. */
+const ЖДЁМ_РЕШЕНИЯ = 5 * 60_000
 
 const isFiniteNonNeg = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 0
 const isMicro = (v: unknown) => v === undefined || v === null || (typeof v === 'number' && Number.isFinite(v) && v >= 0) || (typeof v === 'string' && /^\d+$/.test(v))
@@ -62,7 +67,33 @@ export class ProviderController {
       this.perms = (r[PERM_KEY] as Record<string, string>) ?? {}
       this.privView = (r[PRIV_KEY] as Record<string, true>) ?? {}
     })
-    try { chrome.windows?.onRemoved?.addListener(id => { if (id === this.approvalWindowId) this.approvalWindowId = null }) } catch { /* */ }
+    /* Окно подтверждения закрыли.
+
+       Раньше здесь сбрасывался только его номер, а сам ожидающий запрос
+       оставался висеть: страница ждала ответа ВЕЧНО — обмен замирал на
+       «swapping…» и не двигался. Хуже того, следующая попытка отвергалась со
+       словами «уже есть ожидающий запрос», и обмен переставал работать совсем,
+       пока не перезапустишь кошелёк.
+
+       Закрыли окно — значит решения не будет. Отвечаем отказом, как если бы
+       нажали «отклонить». */
+    try {
+      chrome.windows?.onRemoved?.addListener(id => {
+        if (id !== this.approvalWindowId) return
+        this.approvalWindowId = null
+        this.отклонитьВсе('approval window was closed')
+      })
+    } catch { /* */ }
+  }
+
+  /** Отказать всем ожидающим решения: окно закрыли, решения не будет. */
+  private отклонитьВсе(причина: string) {
+    for (const [id, p] of this.pending) {
+      this.pending.delete(id)
+      if (p.таймер) clearTimeout(p.таймер)
+      try { p.sendResponse({ ok: false, error: причина }) } catch { /* страница могла уйти */ }
+    }
+    this.updateBadge()
   }
 
   /** The popup pings while open; this lets us tell whether one is alive to render a request. */
@@ -216,6 +247,7 @@ export class ProviderController {
       if (p.origin !== origin) continue
       if (p.kind === 'privbal' && kind !== 'privbal') {
         this.pending.delete(id)
+        if (p.таймер) clearTimeout(p.таймер)
         p.sendResponse({ ok: true, res: { value: null } })
         continue
       }
@@ -224,7 +256,16 @@ export class ProviderController {
     }
     // crypto.randomUUID so approval IDs are never reused across service-worker lifecycles.
     const id = 'apr_' + crypto.randomUUID()
-    this.pending.set(id, { sendResponse, kind, origin, data })
+    /* И отдельный срок на случай, если окно не закрывали, а просто ушли: без
+       него запрос тоже висел бы вечно и запирал место. */
+    const таймер = setTimeout(() => {
+      const p = this.pending.get(id)
+      if (!p) return
+      this.pending.delete(id)
+      this.updateBadge()
+      p.sendResponse({ ok: false, error: 'no response — the request timed out' })
+    }, ЖДЁМ_РЕШЕНИЯ)
+    this.pending.set(id, { sendResponse, kind, origin, data, таймер })
     this.surface()
   }
 
@@ -290,6 +331,7 @@ export class ProviderController {
     const p = this.pending.get(id)
     if (!p) return
     this.pending.delete(id)
+    if (p.таймер) clearTimeout(p.таймер)
     this.updateBadge()
     if (this.pending.size === 0 && this.approvalWindowId != null) {
       const wid = this.approvalWindowId; this.approvalWindowId = null
@@ -334,6 +376,7 @@ export class ProviderController {
     const p = this.pending.get(id)
     if (!p || (p.kind !== 'fheprove' && p.kind !== 'fhedecrypt' && p.kind !== 'fhedeposit' && p.kind !== 'stealthsend' && p.kind !== 'stealthscan' && p.kind !== 'stealthviewpub')) return
     this.pending.delete(id)
+    if (p.таймер) clearTimeout(p.таймер)
     this.updateBadge()
     if (this.pending.size === 0 && this.approvalWindowId != null) {
       const wid = this.approvalWindowId; this.approvalWindowId = null
